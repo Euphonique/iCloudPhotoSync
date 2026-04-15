@@ -9,7 +9,7 @@ Runs as a proper DSM app with its own tile, settings UI, scheduler daemon, and D
 ## Why this exists
 
 When I first set up my DiskStation, I couldn’t believe there was no way to sync Apple Photos directly with it. Even Cloud Sync doesn’t offer this option. So I spent a long time looking for a way to back up my photos: Docker images, even a separate virtual machine running on iCloud. None of it was really how it should be.
-But that’s all over now: I’m bringing you the iCloud Photos Sync app—just as it should have officially existed all along.
+But that’s all over now: I’m bringing you the iCloud Photos Sync app — just as it should have officially existed all along.
 
 iCloud is convenient but it's a black box: Apple decides what stays, what gets "optimized", and what happens if your account is locked or deleted. A local mirror on your Synology gives you:
 
