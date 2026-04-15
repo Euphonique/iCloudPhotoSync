@@ -4,7 +4,7 @@ A native Synology DSM 7.2 package that automatically mirrors your iCloud photo l
 Runs as a proper DSM app with its own tile, settings UI, scheduler daemon, and DSM notifications. No Docker, no cron hacks, no SSH fiddling.
 
 <img width="1021" height="542" alt="Screenshot 2026-04-15 092935" src="https://github.com/user-attachments/assets/93f6764b-89a2-427e-b647-f8b992005909" />
- ([More Screenshots](https://github.com/Euphonique/iCloudPhotoSync/blob/79e2973fbf9734c54b42b5a0483ada9e1cec59cb/SCREENSHOTS.md))
+ [More Screenshots](https://github.com/Euphonique/iCloudPhotoSync/blob/79e2973fbf9734c54b42b5a0483ada9e1cec59cb/SCREENSHOTS.md)
 
 ## Why this exists
 
