@@ -1,0 +1,9 @@
+six==1.16.0
+srp==1.0.21
+requests==2.31.0
+certifi==2024.2.2
+charset-normalizer==3.3.2
+idna==3.6
+urllib3==2.2.1
+keyring==25.0.0
+keyrings.alt==5.0.1

@@ -1,0 +1,23 @@
+# spksrc build artifacts
+work-*/
+packages/
+*.spk
+
+# Local backups and snapshots
+Backup/
+Backup2/
+Backup3/
+
+# Internal dev notes
+docs/internal/
+
+# Windows / editor cruft
+Thumbs.db
+*.log
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
