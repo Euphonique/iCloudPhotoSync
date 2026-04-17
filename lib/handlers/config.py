@@ -12,6 +12,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 import config_manager
+from handlers import authz
 from sync_engine import SyncProgress, heal_stale_progress
 
 
@@ -46,6 +47,10 @@ def _get_config(params):
     account_id = params.getvalue("account_id", "").strip()
     if not account_id:
         return {"success": False, "error": {"code": 301, "message": "account_id required"}}
+
+    denied = authz.validate_access(account_id)
+    if denied:
+        return denied
 
     config = config_manager.get_sync_config(account_id)
     return {"success": True, "data": config}
@@ -121,6 +126,10 @@ def _set_config(params):
     if not account_id:
         return {"success": False, "error": {"code": 301, "message": "account_id required"}}
 
+    denied = authz.validate_access(account_id)
+    if denied:
+        return denied
+
     if _sync_running(account_id):
         return {"success": False, "error": {"code": 305,
             "message": "Einstellungen k\u00f6nnen nicht ge\u00e4ndert werden, solange eine Synchronisation l\u00e4uft. Bitte stoppe den Sync zuerst."}}
@@ -192,6 +201,10 @@ def _set_album(params):
     account_id = params.getvalue("account_id", "").strip()
     if not account_id:
         return {"success": False, "error": {"code": 301, "message": "account_id required"}}
+
+    denied = authz.validate_access(account_id)
+    if denied:
+        return denied
 
     if _sync_running(account_id):
         return {"success": False, "error": {"code": 305,

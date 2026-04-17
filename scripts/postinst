@@ -1,9 +1,11 @@
 #!/bin/sh
 # Runs as the package user on DSM 7 community packages.
 # Root-only operations (synoshare, /etc/crontab) are NOT possible here —
-# writable share access is provided by conf/resource -> data-share
-# which creates /volume1/iCloudPhotos with RW for the package user.
+# writable share access is provided by conf/resource -> data-share.
+# On DSM 7.2+ data-share auto-creates /volume1/iCloudPhotos; on DSM 7.1
+# it may not, so we create the directory as a fallback below.
 PKG_VAR="${SYNOPKG_PKGVAR:-/var/packages/iCloudPhotoSync/var}"
+DEFAULT_TARGET="/volume1/iCloudPhotos"
 
 mkdir -p "$PKG_VAR"
 mkdir -p "$PKG_VAR/accounts"
@@ -11,6 +13,14 @@ mkdir -p "$PKG_VAR/logs"
 
 if [ ! -f "$PKG_VAR/config.json" ]; then
     echo '{"accounts": [], "default_target_dir": "/volume1/iCloudPhotos"}' > "$PKG_VAR/config.json"
+fi
+
+# Fallback: if data-share did not provision the target directory (DSM 7.1),
+# create it so the package can write to it immediately. Users on DSM 7.1
+# may still need to create a Shared Folder named "iCloudPhotos" via
+# DSM Control Panel for SMB/AFP network visibility.
+if [ ! -d "$DEFAULT_TARGET" ]; then
+    mkdir -p "$DEFAULT_TARGET" 2>/dev/null || true
 fi
 
 # Clean up leftovers from earlier versions that tried root-only tricks

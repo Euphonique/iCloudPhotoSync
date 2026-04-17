@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.swp
+*.swo
+*~
+*.bak
+*.orig
+.DS_Store
+plan71.md

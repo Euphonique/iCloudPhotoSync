@@ -1,5 +1,5 @@
 // ============================================================
-// iCloud Photo Sync — DSM 7.2 Native App
+// iCloud Photo Sync — DSM 7.1+ Native App
 // ============================================================
 
 // Ensure namespace exists before helpers hang off it.

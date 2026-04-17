@@ -15,6 +15,7 @@ import time
 import config_manager
 import icloud_client
 import notifier
+from handlers import authz
 
 
 def handle(params):
@@ -88,6 +89,7 @@ def _login(params):
     })
     config_manager.clear_pending_password(account["id"])
     notifier.clear_all_markers(account["id"])
+    authz.stamp_owner(account["id"])
     return {
         "success": True,
         "data": {

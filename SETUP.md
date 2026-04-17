@@ -1,4 +1,25 @@
-# Synology DSM 7.2 Native App — Toolkit Setup
+# Synology DSM 7.1+ Native App — Toolkit Setup
+
+## Hinweise zu DSM 7.1
+
+Das Paket unterstützt sowohl DSM 7.1 als auch DSM 7.2+. Auf DSM 7.1 gibt es zwei Unterschiede:
+
+### Python 3
+
+DSM 7.2 liefert Python 3 als Systembinary (`/usr/bin/python3`). Auf DSM 7.1 ist Python 3 möglicherweise **nicht vorinstalliert**. Falls die Installation fehlschlägt mit der Meldung *"Python 3 benötigt"*:
+
+1. **Paketzentrum** → Python3 installieren (falls verfügbar), oder
+2. **SynoCommunity** als Paketquelle hinzufügen (`https://packages.synocommunity.com`) und Python3 von dort installieren.
+
+### Zielordner `/volume1/iCloudPhotos`
+
+Auf DSM 7.2 erstellt `data-share` den freigegebenen Ordner automatisch. Auf DSM 7.1 legt das Installationsskript das Verzeichnis als Fallback an — es ist dann aber möglicherweise kein vollwertiger *Shared Folder* (d.h. nicht über SMB/AFP im Netzwerk sichtbar). Falls Sie den Ordner per Netzwerk erreichen möchten:
+
+1. **DSM → Systemsteuerung → Freigegebener Ordner** → *Erstellen*
+2. Name: `iCloudPhotos`, Speicherort: Volume 1
+3. Falls der Ordner bereits existiert: den vorhandenen Ordner als Shared Folder registrieren.
+
+---
 
 ## Voraussetzungen
 
@@ -15,7 +36,7 @@ wsl --install -d Ubuntu
 
 | Komponente | Quelle |
 |---|---|
-| **pkgscripts-ng** | https://github.com/SynologyOpenSource/pkgscripts-ng (Branch `DSM7.2`) |
+| **pkgscripts-ng** | https://github.com/SynologyOpenSource/pkgscripts-ng (Branch `DSM7.1` or `DSM7.2`) |
 | **Build-Environment** | Wird automatisch von `EnvDeploy` heruntergeladen |
 | **Beispielpakete** | https://github.com/SynologyOpenSource/ExamplePackages |
 | **Minimal-Paket** | https://github.com/SynologyOpenSource/minimalPkg |
@@ -41,22 +62,22 @@ sudo chown $USER:$USER /toolkit
 cd /toolkit
 ```
 
-### Schritt 3: pkgscripts-ng klonen (DSM 7.2 Branch)
+### Schritt 3: pkgscripts-ng klonen (DSM 7.1 Branch)
 
 ```bash
 git clone https://github.com/SynologyOpenSource/pkgscripts-ng.git
 cd pkgscripts-ng
-git checkout DSM7.2
+git checkout DSM7.1
 ```
 
 ### Schritt 4: Build-Environment deployen
 
 ```bash
 # Verfügbare Plattformen anzeigen:
-sudo ./EnvDeploy -v 7.2 --list
+sudo ./EnvDeploy -v 7.1 --list
 
 # Environment für Zielplattform deployen (z.B. geminilake):
-sudo ./EnvDeploy -v 7.2 -p geminilake
+sudo ./EnvDeploy -v 7.1 -p geminilake
 ```
 
 #### Gängige Plattformen
@@ -84,7 +105,7 @@ Für plattformunabhängige Pakete (kein nativer Code): `arch="noarch"` in INFO.s
 │   └── include/
 │       └── pkg_util.sh      # Helper-Funktionen
 ├── build_env/              # Chroot-Umgebung (von EnvDeploy)
-│   └── ds.geminilake-7.2/
+│   └── ds.geminilake-7.1/
 ├── source/                 # Paket-Quellcode
 │   └── iCloudPhotoSync/
 ├── toolkit_tarballs/       # Gecachte Environment-Tarballs
@@ -127,13 +148,13 @@ Für plattformunabhängige Pakete (kein nativer Code): `arch="noarch"` in INFO.s
 cd /toolkit/pkgscripts-ng
 
 # Voller Build (kompilieren + packen):
-sudo ./PkgCreate.py -v 7.2 -p geminilake -c iCloudPhotoSync
+sudo ./PkgCreate.py -v 7.1 -p geminilake -c iCloudPhotoSync
 
 # Nur packen (ohne Kompilierung, z.B. für noarch):
-sudo ./PkgCreate.py -v 7.2 -p geminilake -I iCloudPhotoSync
+sudo ./PkgCreate.py -v 7.1 -p geminilake -I iCloudPhotoSync
 
 # Nur kompilieren (ohne packen):
-sudo ./PkgCreate.py -v 7.2 -p geminilake iCloudPhotoSync
+sudo ./PkgCreate.py -v 7.1 -p geminilake iCloudPhotoSync
 ```
 
 ### Ausgabe
@@ -156,7 +177,7 @@ Generiert die Paket-Metadaten. Pflichtfelder:
 |---|---|---|
 | `package` | Interner Name (keine Sonderzeichen) | `"iCloudPhotoSync"` |
 | `version` | Format: feature-build | `"1.0.0-0001"` |
-| `os_min_ver` | Minimale DSM-Version | `"7.2-64570"` |
+| `os_min_ver` | Minimale DSM-Version | `"7.1-42218"` |
 | `arch` | CPU-Architektur | `"noarch"` |
 | `maintainer` | Entwickler | `"Your Name"` |
 | `description` | Kurzbeschreibung | `"iCloud Photo Sync"` |

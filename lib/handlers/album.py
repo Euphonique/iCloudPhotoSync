@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 import config_manager
 import icloud_client
+from handlers import authz
 
 
 def _cache_path(account_id):
@@ -58,6 +59,10 @@ def _cached_albums(params):
     if not account_id:
         return {"success": False, "error": {"code": 301, "message": "account_id required"}}
 
+    denied = authz.validate_access(account_id)
+    if denied:
+        return denied
+
     cache = _load_cache(account_id)
     counts = cache.get("counts", {})
     if not counts:
@@ -86,6 +91,10 @@ def _get_authenticated_client(params):
     account_id = params.getvalue("account_id", "").strip()
     if not account_id:
         return None, {"success": False, "error": {"code": 301, "message": "account_id required"}}
+
+    denied = authz.validate_access(account_id)
+    if denied:
+        return None, denied
 
     account = config_manager.get_account(account_id)
     if not account:
@@ -130,7 +139,9 @@ def _list_albums(params):
         }}
 
     except Exception as e:
-        return {"success": False, "error": {"code": 310, "message": str(e)}}
+        import logging
+        logging.getLogger("album").exception("list_albums error")
+        return {"success": False, "error": {"code": 310, "message": "Failed to list albums"}}
 
 
 def _album_count(params):
@@ -159,7 +170,9 @@ def _album_count(params):
         return {"success": True, "data": {"album": album_name, "photo_count": count}}
 
     except Exception as e:
-        return {"success": False, "error": {"code": 312, "message": str(e)}}
+        import logging
+        logging.getLogger("album").exception("album_count error")
+        return {"success": False, "error": {"code": 312, "message": "Failed to get album count"}}
 
 
 def _list_photos(params):
@@ -168,8 +181,14 @@ def _list_photos(params):
         return err
 
     album_name = params.getvalue("album", "All Photos").strip()
-    limit = int(params.getvalue("limit", "50"))
-    offset = int(params.getvalue("offset", "0"))
+    try:
+        limit = max(1, min(500, int(params.getvalue("limit", "50"))))
+    except (TypeError, ValueError):
+        limit = 50
+    try:
+        offset = max(0, int(params.getvalue("offset", "0")))
+    except (TypeError, ValueError):
+        offset = 0
     direction = params.getvalue("direction", "ASCENDING").strip().upper()
     if direction not in ("ASCENDING", "DESCENDING"):
         direction = "ASCENDING"
@@ -198,4 +217,6 @@ def _list_photos(params):
         }
 
     except Exception as e:
-        return {"success": False, "error": {"code": 312, "message": str(e)}}
+        import logging
+        logging.getLogger("album").exception("list_photos error")
+        return {"success": False, "error": {"code": 312, "message": "Failed to list photos"}}

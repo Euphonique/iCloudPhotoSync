@@ -141,6 +141,11 @@ def run_move(account_id, old_dir, new_dir):
         progress.save()
         return progress
 
+    # Resolve symlinks in both directories so path prefix checks below
+    # cannot be tricked by a symlinked intermediate component.
+    old_dir = os.path.realpath(old_dir)
+    new_dir = os.path.realpath(new_dir)
+
     try:
         os.makedirs(new_dir, exist_ok=True)
     except OSError as e:

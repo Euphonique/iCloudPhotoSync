@@ -83,8 +83,14 @@ _LEVEL_RANK = {"debug": 0, "info": 1, "warning": 2, "error": 3}
 
 def _list_logs(params):
     # Ext JS PagingToolbar sends "start" and "limit"
-    offset = int(params.getvalue("start", "0"))
-    limit = int(params.getvalue("limit", "50"))
+    try:
+        offset = max(0, int(params.getvalue("start", "0")))
+    except (TypeError, ValueError):
+        offset = 0
+    try:
+        limit = max(1, min(500, int(params.getvalue("limit", "50"))))
+    except (TypeError, ValueError):
+        limit = 50
     min_level = params.getvalue("level", "").strip().lower()
 
     log_dir = os.path.join(config_manager.PKG_VAR, "logs")

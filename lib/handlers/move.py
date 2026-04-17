@@ -14,6 +14,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 import config_manager
+from handlers import authz
 from move_engine import MoveProgress
 from sync_engine import SyncProgress
 
@@ -53,6 +54,10 @@ def _start(params):
     if not account_id or not old_dir or not new_dir:
         return {"success": False, "error": {"code": 301, "message": "account_id/old_dir/new_dir required"}}
 
+    denied = authz.validate_access(account_id)
+    if denied:
+        return denied
+
     sp = SyncProgress.load(account_id)
     if sp.status in ("syncing", "starting"):
         return {"success": False, "error": {"code": 303, "message": "Sync l\u00e4uft — bitte erst anhalten."}}
@@ -84,9 +89,9 @@ def _start(params):
             )
     except Exception as e:
         progress.status = "error"
-        progress.error = "Failed to start move: %s" % e
+        progress.error = "Failed to start move"
         progress.save()
-        return {"success": False, "error": {"code": 500, "message": str(e)}}
+        return {"success": False, "error": {"code": 500, "message": "Failed to start move"}}
 
     return {"success": True, "data": {"message": "Move started"}}
 
@@ -95,6 +100,11 @@ def _stop(params):
     account_id = params.getvalue("account_id", "").strip()
     if not account_id:
         return {"success": False, "error": {"code": 301, "message": "account_id required"}}
+
+    denied = authz.validate_access(account_id)
+    if denied:
+        return denied
+
     stop_file = os.path.join(config_manager.get_account_dir(account_id), ".stop_move")
     try:
         with open(stop_file, "w") as f:
@@ -108,6 +118,10 @@ def _status(params):
     account_id = params.getvalue("account_id", "").strip()
     if not account_id:
         return {"success": False, "error": {"code": 301, "message": "account_id required"}}
+
+    denied = authz.validate_access(account_id)
+    if denied:
+        return denied
 
     progress = MoveProgress.load(account_id)
 

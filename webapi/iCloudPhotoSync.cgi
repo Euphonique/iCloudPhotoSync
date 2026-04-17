@@ -53,7 +53,9 @@ def main():
         result = handler(params)
         respond(**result)
     except Exception as e:
-        respond(False, error={"code": 500, "message": str(e)})
+        import logging
+        logging.getLogger("webapi.cgi").exception("Handler error")
+        respond(False, error={"code": 500, "message": "Internal server error"})
 
 
 if __name__ == "__main__":

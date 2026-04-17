@@ -5,8 +5,12 @@ Config is stored at /var/packages/iCloudPhotoSync/var/config.json
 Per-account data is in /var/packages/iCloudPhotoSync/var/accounts/{account_id}/
 """
 import contextlib
+import hashlib
+import hmac
 import json
 import os
+import re
+import secrets
 import threading
 import uuid
 
@@ -14,6 +18,22 @@ try:
     import fcntl
 except ImportError:  # Windows dev boxes
     fcntl = None
+
+# Regex for valid account IDs (full UUID4, lowercase hex + hyphens)
+_ACCOUNT_ID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
+# Also accept legacy 8-char truncated IDs from before this hardening
+_LEGACY_ACCOUNT_ID_RE = re.compile(r'^[0-9a-f]{8}$')
+
+
+def validate_account_id(account_id):
+    """Return True if account_id is a safe, valid identifier.
+
+    Prevents path traversal by rejecting anything that isn't a UUID or
+    legacy 8-char hex string.
+    """
+    if not account_id or not isinstance(account_id, str):
+        return False
+    return bool(_ACCOUNT_ID_RE.match(account_id) or _LEGACY_ACCOUNT_ID_RE.match(account_id))
 
 _config_tlock = threading.Lock()
 
@@ -124,7 +144,7 @@ def get_account(account_id):
 def add_account(apple_id):
     with _locked(CONFIG_FILE + ".lock"):
         config = load_config()
-        account_id = str(uuid.uuid4())[:8]
+        account_id = str(uuid.uuid4())
         account = {
             "id": account_id,
             "apple_id": apple_id,
@@ -137,7 +157,7 @@ def add_account(apple_id):
 
     # Create per-account directory for session data
     account_dir = os.path.join(ACCOUNTS_DIR, account_id)
-    os.makedirs(account_dir, exist_ok=True)
+    os.makedirs(account_dir, mode=0o700, exist_ok=True)
 
     return account
 
@@ -168,33 +188,124 @@ def remove_account(account_id):
 
 
 def get_account_dir(account_id):
+    if not validate_account_id(account_id):
+        raise ValueError("Invalid account_id: %r" % account_id)
     return os.path.join(ACCOUNTS_DIR, account_id)
 
 
 # --- Temporary password storage for pending 2FA ---
 # Stored in the per-account directory, cleared after successful auth.
 
+# --- Per-installation secret for encrypting transient credentials ---
+
+def _secret_path():
+    return os.path.join(PKG_VAR, ".install_secret")
+
+
+def _get_install_secret():
+    """Return or create a 32-byte per-installation secret.
+
+    Stored outside per-account directories so compromising account data
+    alone does not reveal the encryption key.
+    """
+    path = _secret_path()
+    _ensure_dirs()
+    if os.path.isfile(path):
+        with open(path, "rb") as f:
+            key = f.read()
+        if len(key) == 32:
+            return key
+    key = secrets.token_bytes(32)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, key)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return key
+
+
+def _encrypt_password(password):
+    """Encrypt with HMAC-SHA256 derived XOR stream.
+
+    Not a full AES cipher, but sufficient for short-lived transient
+    storage (password is deleted after 2FA completes). The nonce
+    ensures repeated encryptions produce different ciphertexts.
+    """
+    key = _get_install_secret()
+    nonce = secrets.token_bytes(16)
+    pw_bytes = password.encode("utf-8")
+    # Derive a keystream long enough to cover the password
+    stream = b""
+    counter = 0
+    while len(stream) < len(pw_bytes):
+        block = hmac.new(key, nonce + counter.to_bytes(4, "big"), hashlib.sha256).digest()
+        stream += block
+        counter += 1
+    encrypted = bytes(a ^ b for a, b in zip(pw_bytes, stream[:len(pw_bytes)]))
+    # Format: nonce (16) + encrypted_password
+    return nonce + encrypted
+
+
+def _decrypt_password(data):
+    """Decrypt a password encrypted by _encrypt_password."""
+    if not data or len(data) < 17:
+        return None
+    key = _get_install_secret()
+    nonce = data[:16]
+    encrypted = data[16:]
+    stream = b""
+    counter = 0
+    while len(stream) < len(encrypted):
+        block = hmac.new(key, nonce + counter.to_bytes(4, "big"), hashlib.sha256).digest()
+        stream += block
+        counter += 1
+    pw_bytes = bytes(a ^ b for a, b in zip(encrypted, stream[:len(encrypted)]))
+    try:
+        return pw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        # Decrypted bytes aren't valid UTF-8 — the file was likely written
+        # before encryption was added (plaintext legacy) and the XOR
+        # produced garbage. Return None so the caller falls back.
+        return None
+
+
 def save_pending_password(account_id, password):
-    """Store password temporarily while waiting for 2FA."""
-    pw_file = os.path.join(ACCOUNTS_DIR, account_id, ".pending_pw")
-    os.makedirs(os.path.join(ACCOUNTS_DIR, account_id), exist_ok=True)
-    with open(pw_file, "w") as f:
-        f.write(password)
-    os.chmod(pw_file, 0o600)
+    """Encrypt and store password temporarily while waiting for 2FA."""
+    acc_dir = get_account_dir(account_id)
+    pw_file = os.path.join(acc_dir, ".pending_pw")
+    os.makedirs(acc_dir, mode=0o700, exist_ok=True)
+    encrypted = _encrypt_password(password)
+    fd = os.open(pw_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, encrypted)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def get_pending_password(account_id):
-    """Retrieve temporarily stored password, or None."""
-    pw_file = os.path.join(ACCOUNTS_DIR, account_id, ".pending_pw")
-    if os.path.isfile(pw_file):
-        with open(pw_file, "r") as f:
-            return f.read()
-    return None
+    """Retrieve and decrypt temporarily stored password, or None."""
+    acc_dir = get_account_dir(account_id)
+    pw_file = os.path.join(acc_dir, ".pending_pw")
+    if not os.path.isfile(pw_file):
+        return None
+    with open(pw_file, "rb") as f:
+        data = f.read()
+    # Support legacy plaintext files from before encryption was added.
+    # _decrypt_password returns None if decryption produces invalid UTF-8
+    # (i.e. the file wasn't actually encrypted).
+    result = _decrypt_password(data)
+    if result is not None:
+        return result
+    # Fallback: treat as plaintext (legacy)
+    return data.decode("utf-8", errors="replace")
 
 
 def clear_pending_password(account_id):
     """Remove temporarily stored password."""
-    pw_file = os.path.join(ACCOUNTS_DIR, account_id, ".pending_pw")
+    acc_dir = get_account_dir(account_id)
+    pw_file = os.path.join(acc_dir, ".pending_pw")
     try:
         os.remove(pw_file)
     except FileNotFoundError:

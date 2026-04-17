@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 import config_manager
 import sync_manifest
+from handlers import authz
 from sync_engine import SyncProgress, heal_stale_progress, runner_alive
 
 
@@ -34,6 +35,10 @@ def _start_sync(params):
     account_id = params.getvalue("account_id", "").strip()
     if not account_id:
         return {"success": False, "error": {"code": 301, "message": "account_id required"}}
+
+    denied = authz.validate_access(account_id)
+    if denied:
+        return denied
 
     account = config_manager.get_account(account_id)
     if not account:
@@ -69,9 +74,9 @@ def _start_sync(params):
             )
     except Exception as e:
         progress.status = "error"
-        progress.error = "Failed to start sync: %s" % str(e)
+        progress.error = "Failed to start sync"
         progress.save()
-        return {"success": False, "error": {"code": 500, "message": str(e)}}
+        return {"success": False, "error": {"code": 500, "message": "Failed to start sync"}}
 
     return {"success": True, "data": {"message": "Sync started"}}
 
@@ -80,6 +85,10 @@ def _stop_sync(params):
     account_id = params.getvalue("account_id", "").strip()
     if not account_id:
         return {"success": False, "error": {"code": 301, "message": "account_id required"}}
+
+    denied = authz.validate_access(account_id)
+    if denied:
+        return denied
 
     # Write a stop signal file that sync_runner checks
     stop_file = os.path.join(config_manager.get_account_dir(account_id), ".stop_sync")
@@ -96,6 +105,10 @@ def _sync_status(params):
     account_id = params.getvalue("account_id", "").strip()
     if not account_id:
         return {"success": False, "error": {"code": 301, "message": "account_id required"}}
+
+    denied = authz.validate_access(account_id)
+    if denied:
+        return denied
 
     progress = SyncProgress.load(account_id)
 

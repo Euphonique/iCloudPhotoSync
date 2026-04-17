@@ -1,6 +1,6 @@
 # Synology iCloud Photo Sync
 
-A native Synology DSM 7.2 package that automatically mirrors your iCloud photo library to your NAS — so your memories live on storage you own, not just on Apple's servers.
+A native Synology DSM 7.1+ package that automatically mirrors your iCloud photo library to your NAS — so your memories live on storage you own, not just on Apple's servers.
 Runs as a proper DSM app with its own tile, settings UI, scheduler daemon, and DSM notifications. No Docker, no cron hacks, no SSH fiddling.
 
 <img width="1021" height="542" alt="Screenshot 2026-04-15 092935" src="https://github.com/user-attachments/assets/93f6764b-89a2-427e-b647-f8b992005909" />
@@ -80,7 +80,7 @@ The first full sync of a large library can take hours. Subsequent syncs are incr
 
 ## Requirements
 
-- Synology DSM **7.2** or newer (uses data-share for target folder permissions, which requires DSM 7.2+)
+- Synology DSM **7.1** or newer
 - Any architecture — the package is `arch=noarch` (pure Python, no compiled binaries)
 - An Apple ID with 2FA enabled (required by Apple since 2019, not something this app imposes)
 - Enough disk space for your photo library
@@ -94,15 +94,15 @@ The first full sync of a large library can take hours. Subsequent syncs are incr
 
 ## Building from source
 
-Requires the Synology DSM 7.2 toolkit (Linux-only — uses `chroot`). Under Windows, use WSL2 with Ubuntu. See [SETUP.md](SETUP.md) for the full toolkit setup.
+Requires the Synology DSM 7.1+ toolkit (Linux-only — uses `chroot`). Under Windows, use WSL2 with Ubuntu. See [SETUP.md](SETUP.md) for the full toolkit setup.
 
 ```bash
 # From the toolkit root (inside your Linux environment)
 cd /toolkit/pkgscripts-ng
-./PkgCreate.py -v 7.2 -p broadwellnk -c iCloudPhotoSync
+./PkgCreate.py -v 7.1 -p broadwellnk -c iCloudPhotoSync
 ```
 
-The resulting `.spk` lands in `/toolkit/build_env/ds.broadwellnk-7.2/image/packages/`.
+The resulting `.spk` lands in `/toolkit/build_env/ds.broadwellnk-7.1/image/packages/`.
 
 ## Architecture
 
@@ -140,5 +140,5 @@ Runtime data lives under `/var/packages/iCloudPhotoSync/var/`:
 - [srp](https://github.com/cocagne/pysrp) — BSD
 
 ## Disclaimer
-This software comes with no warranty; I assume no liability for any damage to hardware or software, or for any loss of data, that may result from using the app. 
+This software comes with no warranty; I assume no liability for any damage to hardware or software, or for any loss of data, that may result from using the app.
 Not affiliated with or endorsed by Apple Inc. "Apple", "iCloud", "Synology", "DSM", and related marks are trademarks of Apple Inc. or Synology Inc. This package talks to Apple's private-but-reverse-engineered iCloud APIs; Apple can change these at any time and break the sync. If that happens, open an issue — or better, a pull request.

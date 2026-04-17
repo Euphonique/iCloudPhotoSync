@@ -86,12 +86,22 @@ def _download_file(url, dest_path, session=None):
     """
     dest_dir = os.path.dirname(dest_path)
     os.makedirs(dest_dir, exist_ok=True)
+
+    # Symlink protection: resolve the real path and verify it hasn't escaped
+    # the intended directory. A symlink at any component could redirect writes
+    # to an arbitrary location.
+    real_dest = os.path.realpath(dest_path)
+    real_dir = os.path.realpath(dest_dir)
+    if not real_dest.startswith(real_dir + os.sep) and real_dest != real_dir:
+        LOGGER.error("Path escape detected: %s resolves to %s", dest_path, real_dest)
+        return False
+
     # Ensure directories are world-readable so DSM File Station can see them
     try:
         os.chmod(dest_dir, 0o755)
     except OSError:
         pass
-    tmp_path = dest_path + ".part"
+    tmp_path = real_dest + ".part"
     # (connect, read) — a read timeout makes iter_content() give up when
     # the stream goes silent, so a rate-limited/stalled chunk can't pin
     # a worker thread forever and block the whole batch.
@@ -111,7 +121,7 @@ def _download_file(url, dest_path, session=None):
                 except OSError:
                     pass
             os.chmod(tmp_path, 0o644)
-            os.replace(tmp_path, dest_path)
+            os.replace(tmp_path, real_dest)
             return True
         except Exception as e:
             last_err = e

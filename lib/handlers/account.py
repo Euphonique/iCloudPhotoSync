@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 import config_manager
 import icloud_client
+from handlers import authz
 
 
 def handle(params):
@@ -29,6 +30,7 @@ def handle(params):
 
 def _list_accounts():
     accounts = config_manager.get_accounts()
+    accounts = authz.filter_accounts_for_user(accounts)
     safe_accounts = []
     for acc in accounts:
         safe_accounts.append({
@@ -47,6 +49,10 @@ def _get_account(params):
             "success": False,
             "error": {"code": 203, "message": "account_id required"}
         }
+
+    denied = authz.validate_access(account_id)
+    if denied:
+        return denied
 
     account = config_manager.get_account(account_id)
     if not account:
@@ -73,6 +79,10 @@ def _remove_account(params):
             "success": False,
             "error": {"code": 203, "message": "account_id required"}
         }
+
+    denied = authz.validate_access(account_id)
+    if denied:
+        return denied
 
     account = config_manager.get_account(account_id)
     if not account:

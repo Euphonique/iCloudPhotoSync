@@ -9,6 +9,8 @@ import json
 import os
 import sys
 import cgi
+import re
+from urllib.parse import urlparse
 
 # The ui/ dir lives at /var/packages/iCloudPhotoSync/target/ui/
 # The lib/ dir lives at /var/packages/iCloudPhotoSync/target/lib/
@@ -55,11 +57,28 @@ def respond(success, data=None, error=None, total=None):
     print(body)
 
 
+def _valid_icloud_url(url):
+    """Return True if url points to a genuine iCloud content host.
+
+    Uses urlparse to inspect the hostname rather than a substring check,
+    preventing bypasses like evil.com?x=icloud-content.com.
+    """
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        return (
+            parsed.scheme in ("http", "https")
+            and (host.endswith(".icloud-content.com") or host.endswith(".icloud.com"))
+        )
+    except Exception:
+        return False
+
+
 def proxy_thumb():
     """Proxy iCloud thumbnail to avoid mixed-content browser block."""
     params = cgi.FieldStorage()
     url = params.getvalue("url", "")
-    if not url or "icloud-content.com" not in url:
+    if not url or not _valid_icloud_url(url):
         print("Status: 400 Bad Request")
         print("Content-Type: text/plain")
         print()
@@ -83,11 +102,25 @@ def proxy_thumb():
 
 
 def _safe_filename(name, fallback="photo.jpg"):
-    """Strip path separators and control chars from filename."""
+    """Sanitize a filename for use in Content-Disposition headers and ZIP entries.
+
+    Strips NUL bytes, control characters, path separators, and shell
+    metacharacters. Truncates to 255 UTF-8 bytes (ext4/btrfs limit).
+    """
     if not name:
         return fallback
-    name = name.replace("\\", "_").replace("/", "_").replace("\r", "").replace("\n", "")
+    # Remove NUL bytes and C0/C1 control characters
+    name = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', name)
+    # Remove path separators
+    name = name.replace("\\", "_").replace("/", "_")
+    # Remove shell metacharacters and characters dangerous in HTTP headers
+    name = re.sub(r'[;|&$`*?!<>\'"(){}\[\]]', '', name)
     name = name.strip(". ")
+    if not name:
+        return fallback
+    # Truncate to 255 UTF-8 bytes
+    encoded = name.encode('utf-8')[:255]
+    name = encoded.decode('utf-8', errors='ignore')
     return name or fallback
 
 
@@ -96,7 +129,7 @@ def download_photo():
     params = cgi.FieldStorage()
     url = params.getvalue("url", "")
     filename = _safe_filename(params.getvalue("filename", ""))
-    if not url or "icloud-content.com" not in url:
+    if not url or not _valid_icloud_url(url):
         print("Status: 400 Bad Request")
         print("Content-Type: text/plain")
         print()
@@ -141,7 +174,7 @@ def download_zip(raw_body):
         print("Invalid payload: %s" % e)
         return
 
-    items = [it for it in items if it.get("url") and "icloud-content.com" in it.get("url", "")]
+    items = [it for it in items if it.get("url") and _valid_icloud_url(it.get("url", ""))]
     if not items:
         print("Status: 400 Bad Request")
         print("Content-Type: text/plain")
@@ -231,7 +264,9 @@ def main():
         result = handler(params)
         respond(**result)
     except Exception as e:
-        respond(False, error={"code": 500, "message": str(e)})
+        import logging
+        logging.getLogger("api.cgi").exception("Handler error")
+        respond(False, error={"code": 500, "message": "Internal server error"})
 
 
 if __name__ == "__main__":
