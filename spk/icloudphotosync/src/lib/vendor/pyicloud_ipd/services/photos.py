@@ -52,7 +52,9 @@ class PhotoAlbum:
     @property
     def photo_count(self):
         if self._photo_count is None:
-            if self.album_type == "shared":
+            if self.album_type == "folder":
+                self._photo_count = 0
+            elif self.album_type == "shared":
                 self._photo_count = self.service._get_shared_album_count(self)
             else:
                 self._photo_count = self.service._get_album_count(self.obj_type)
@@ -286,11 +288,15 @@ class PhotosService:
                 smart_filter=query_filter, smart_count_key=count_key,
             )
 
-        # User-created albums
+        # User-created albums (top-level only — CloudKit returns direct children
+        # of the root folder; sub-albums inside folder-type albums are fetched
+        # in a second pass below).
+        folders = {}  # recordName -> folder name, for child queries
         try:
             data = self._query({
                 "query": {"recordType": "CPLAlbumByPositionLive"},
                 "zoneID": self.ZONE_ID,
+                "resultsLimit": 500,
             })
             for record in data.get("records", []):
                 rn = record.get("recordName", "")
@@ -300,16 +306,64 @@ class PhotosService:
                 if fields.get("isDeleted", {}).get("value"):
                     continue
                 raw_name = fields.get("albumNameEnc", {}).get("value", "")
-                try:
-                    name = base64.b64decode(raw_name).decode("utf-8")
-                except Exception:
-                    name = raw_name
-                if name:
-                    self._albums[name] = PhotoAlbum(
-                        self, name, record_name=rn, album_type="user"
-                    )
+                name = ""
+                if raw_name:
+                    try:
+                        name = base64.b64decode(raw_name).decode("utf-8")
+                    except Exception:
+                        name = raw_name
+                if not name:
+                    name = fields.get("albumName", {}).get("value", "")
+                if not name:
+                    continue
+                # albumType=3 means folder (contains sub-albums, not photos)
+                is_folder = fields.get("albumType", {}).get("value", 0) == 3
+                self._albums[name] = PhotoAlbum(
+                    self, name, record_name=rn,
+                    album_type="folder" if is_folder else "user"
+                )
+                if is_folder:
+                    folders[rn] = name
         except Exception:
             LOGGER.exception("Failed to fetch user albums")
+
+        # Second pass: fetch sub-albums for each folder album
+        for folder_rn, folder_name in folders.items():
+            try:
+                child_data = self._query({
+                    "query": {
+                        "recordType": "CPLAlbumByPositionLive",
+                        "filterBy": [{
+                            "fieldName": "parentId",
+                            "comparator": "EQUALS",
+                            "fieldValue": {"type": "STRING", "value": folder_rn},
+                        }],
+                    },
+                    "zoneID": self.ZONE_ID,
+                    "resultsLimit": 500,
+                })
+                for record in child_data.get("records", []):
+                    rn = record.get("recordName", "")
+                    fields = record.get("fields", {})
+                    if fields.get("isDeleted", {}).get("value"):
+                        continue
+                    raw_name = fields.get("albumNameEnc", {}).get("value", "")
+                    name = ""
+                    if raw_name:
+                        try:
+                            name = base64.b64decode(raw_name).decode("utf-8")
+                        except Exception:
+                            name = raw_name
+                    if not name:
+                        name = fields.get("albumName", {}).get("value", "")
+                    if name:
+                        child = PhotoAlbum(
+                            self, name, record_name=rn, album_type="user"
+                        )
+                        child.parent_folder = folder_name
+                        self._albums[name] = child
+            except Exception:
+                LOGGER.exception("Failed to fetch sub-albums for folder %s", folder_name)
 
         return self._albums
 

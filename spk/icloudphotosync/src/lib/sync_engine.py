@@ -562,7 +562,7 @@ def _run_sync_locked(account_id):
             def _album_meta(name):
                 try:
                     alb = photos_svc.albums.get(name)
-                    if not alb:
+                    if not alb or alb.album_type == "folder":
                         return (0, 0)
                     # CloudKit rejects resultsLimit<=2, photos() doubles
                     # internally (asset+master pairing), so limit=2.

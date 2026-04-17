@@ -21,3 +21,10 @@ Thumbs.db
 __pycache__/
 *.pyc
 *.pyo
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Local build output
+dist/

@@ -17,6 +17,20 @@ import icloud_client
 
 ADP_ERROR_CODE = 320
 
+_TYPE_ORDER = {"all": 0, "smart": 3, "shared": 4}
+
+def _album_sort_key(a):
+    """Sort: All Photos first, then user+folder albums grouped (folders before
+    their children, sub-albums directly beneath their parent), then smart
+    folders, then shared."""
+    t = _TYPE_ORDER.get(a["type"], 1)
+    parent = a.get("parent_folder") or ""
+    # Group key = parent folder name (or own name for top-level)
+    group = (parent or a["name"]).lower()
+    # Folder rows sort before their children (0 < 1)
+    is_child = 1 if parent else 0
+    return (t, group, is_child, a["name"].lower())
+
 
 def _maybe_adp_error(exc, fallback_code):
     """Return an ADP-specific error response when appropriate."""
@@ -83,6 +97,7 @@ def _cached_albums(params):
 
     album_list = []
     album_types = cache.get("types", {})
+    cached_parents = cache.get("parents", {})
     for name, count in counts.items():
         cached_type = album_types.get(name)
         if cached_type:
@@ -94,10 +109,14 @@ def _cached_albums(params):
             atype = "smart"
         else:
             atype = "user"
-        album_list.append({"name": name, "type": atype, "photo_count": count})
+        album_list.append({
+            "name": name,
+            "type": atype,
+            "photo_count": count,
+            "parent_folder": cached_parents.get(name),
+        })
 
-    type_order = {"all": 0, "user": 1, "smart": 2, "shared": 3}
-    album_list.sort(key=lambda a: (type_order.get(a["type"], 9), a["name"]))
+    album_list.sort(key=_album_sort_key)
 
     cache_age = int(time.time()) - cache.get("updated", 0)
     return {"success": True, "data": {"albums": album_list, "from_cache": True, "cache_age": cache_age}}
@@ -134,12 +153,20 @@ def _list_albums(params):
         albums = photos_svc.albums
 
         album_list = []
+        cached_parents = {}
         for name, album in albums.items():
+            parent = getattr(album, "parent_folder", None)
+            if parent:
+                cached_parents[name] = parent
             album_list.append({
                 "name": name,
                 "type": album.album_type,
                 "photo_count": cached_counts.get(name, -1),
+                "parent_folder": parent,
             })
+        if cached_parents:
+            cache["parents"] = cached_parents
+            _save_cache(account_id, cache)
 
         # Shared albums
         try:
@@ -153,9 +180,7 @@ def _list_albums(params):
         except Exception:
             pass
 
-        # Sort: "All Photos" first, then user albums, then smart folders, then shared
-        type_order = {"all": 0, "user": 1, "smart": 2, "shared": 3}
-        album_list.sort(key=lambda a: (type_order.get(a["type"], 9), a["name"]))
+        album_list.sort(key=_album_sort_key)
 
         cache_age = int(time.time()) - cache.get("updated", 0)
         return {"success": True, "data": {
@@ -185,7 +210,10 @@ def _album_count(params):
         if not album:
             return {"success": False, "error": {"code": 311, "message": "Album not found"}}
 
-        count = album.photo_count
+        if album.album_type == "folder":
+            count = 0
+        else:
+            count = album.photo_count
 
         # Update cache
         cache = _load_cache(account_id)
