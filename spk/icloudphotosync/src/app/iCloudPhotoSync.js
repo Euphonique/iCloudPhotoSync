@@ -1152,7 +1152,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
 
         // Album list store
         this.albumStore = new Ext.data.JsonStore({
-            fields: ["name", "type", "photo_count", {name: "sync_enabled", type: "boolean", defaultValue: false}],
+            fields: ["name", "type", "photo_count", "parent_folder", {name: "sync_enabled", type: "boolean", defaultValue: false}],
             data: []
         });
 
@@ -1166,7 +1166,10 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
                     id: "ics-sync-check",
                     dataIndex: "sync_enabled",
                     width: 30,
-                    renderer: function (val) {
+                    renderer: function (val, meta, record) {
+                        if (record.get("type") === "folder") {
+                            return '<div style="width: 16px; height: 16px; margin: 2px auto 0;"></div>';
+                        }
                         var cls = val ? "syno-ux-checkbox-checked" : "syno-ux-checkbox";
                         return '<div class="' + cls + '" style="width: 16px; height: 16px; margin: 2px auto 0;"></div>';
                     }
@@ -1175,10 +1178,14 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
                     dataIndex: "name", id: "ics-album-name",
                     renderer: function (val, meta, record) {
                         var type = record.get("type");
+                        var isChild = !!record.get("parent_folder");
                         var icon = type === "shared" ? "\ud83d\udc65" : type === "smart" ? "\u2606" : "\ud83d\udcc1";
                         var count = record.get("photo_count");
-                        var countStr = (count < 0) ? '<span style="color: #ccc;">\u2026</span>' : count.toLocaleString("de-DE");
-                        return '<span style="font-size: 13px; line-height: 22px;">' + icon + ' ' +
+                        var countStr = type === "folder" ? ""
+                            : (count < 0) ? '<span style="color: #ccc;">\u2026</span>'
+                            : count.toLocaleString("de-DE");
+                        var indent = isChild ? "padding-left: 20px; " : "";
+                        return '<span style="' + indent + 'font-size: 13px; line-height: 22px;">' + icon + ' ' +
                                Ext.util.Format.htmlEncode(val) +
                                '</span><span style="float: right; color: #999; font-size: 12px; line-height: 22px;">' +
                                countStr + '</span>';
@@ -1194,6 +1201,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
                     // Column 0 = checkbox
                     if (colIndex === 0) {
                         if (self._syncRunning) return;
+                        if (record.get("type") === "folder") return;
                         var newVal = !record.get("sync_enabled");
                         record.set("sync_enabled", newVal);
                         record.commit();
