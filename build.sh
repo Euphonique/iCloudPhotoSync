@@ -3,7 +3,7 @@
 set -euo pipefail
 
 PKG_NAME="iCloudPhotoSync"
-PKG_VER="1.1.1"
+PKG_VER="1.1.2"
 PKG_REV="1"
 DISPLAY_NAME="iCloud Photo Sync"
 DESCRIPTION="Automatically mirrors your iCloud photo library to a Synology NAS."
@@ -34,6 +34,27 @@ mkdir -p "$STAGE/lib/handlers"
 cp "$SRC_DIR"/lib/*.py "$STAGE/lib/"
 cp "$SRC_DIR"/lib/handlers/*.py "$STAGE/lib/handlers/"
 cp -R "$SRC_DIR/lib/vendor" "$STAGE/lib/"
+
+# Install pure-Python dependencies into vendor/ so the standalone .spk
+# works without any system-level pip packages (requests, urllib3, etc.).
+echo "==> Installing Python dependencies into vendor/..."
+if command -v pip3 >/dev/null 2>&1; then
+    PIP_CMD=pip3
+elif command -v pip >/dev/null 2>&1; then
+    PIP_CMD=pip
+else
+    echo "WARNING: pip not found — skipping dependency install."
+    echo "         The .spk will only work if the NAS has 'requests' installed system-wide."
+    PIP_CMD=""
+fi
+if [ -n "$PIP_CMD" ]; then
+    $PIP_CMD install --target "$STAGE/lib/vendor" \
+        --no-compile --no-deps \
+        -r "$SRC_DIR/requirements-pure.txt" \
+        2>&1 | sed 's/^/    /'
+    rm -rf "$STAGE"/lib/vendor/*.dist-info
+    rm -rf "$STAGE"/lib/vendor/bin
+fi
 
 # app/ (DSM web UI — mapped to /webman/3rdparty/PKG_NAME/)
 mkdir -p "$STAGE/app"
@@ -104,7 +125,32 @@ case $1 in
         SYNOPKG_PKGVAR="$VAR_DIR" ICLOUD_STARTUP_ERR="$STARTUP_ERR" \
             nohup "$PYTHON" "$SCHEDULER" >> "$LOG_FILE" 2>&1 &
         echo $! > "$PID_FILE"
-        exit 0
+        sleep 2
+        if is_running; then
+            exit 0
+        else
+            echo "$(date '+%Y-%m-%d %H:%M:%S') Scheduler exited immediately after start." >> "$STARTUP_ERR"
+            echo "Python: $PYTHON" >> "$STARTUP_ERR"
+            echo "Check $LOG_FILE and $STARTUP_ERR for details." >> "$STARTUP_ERR"
+            "$PYTHON" -c "
+import sys, os
+sys.path.insert(0, '$TARGET_DIR/lib')
+sys.path.insert(0, '$TARGET_DIR/lib/vendor')
+try:
+    import requests
+except ImportError as e:
+    print('MISSING DEPENDENCY: %s' % e)
+try:
+    import config_manager
+except ImportError as e:
+    print('MISSING DEPENDENCY: %s' % e)
+try:
+    import sync_engine
+except Exception as e:
+    print('IMPORT ERROR: %s' % e)
+" >> "$STARTUP_ERR" 2>&1
+            exit 1
+        fi
         ;;
     stop)
         [ -f "$PID_FILE" ] && {
@@ -216,7 +262,7 @@ CHECKSUM=$(md5sum "$BUILD_DIR/package.tgz" | cut -d' ' -f1)
 
 cat > "$BUILD_DIR/INFO" <<INFOEOF
 package="$PKG_NAME"
-version="$PKG_VER-$PKG_REV"
+version="$PKG_VER"
 description="$DESCRIPTION"
 description_enu="$DESCRIPTION"
 description_ger="Spiegelt automatisch deine iCloud-Fotobibliothek auf eine Synology NAS."
@@ -239,8 +285,8 @@ INFOEOF
 
 # ── 7. Assemble .spk ─────────────────────────────────────────────────────────
 
-echo "==> Building ${PKG_NAME}-${PKG_VER}-${PKG_REV}.spk ..."
-SPK_FILE="$OUT_DIR/${PKG_NAME}-${PKG_VER}-${PKG_REV}.spk"
+echo "==> Building ${PKG_NAME}-${PKG_VER}.spk ..."
+SPK_FILE="$OUT_DIR/${PKG_NAME}-${PKG_VER}.spk"
 (cd "$BUILD_DIR" && tar cf "$SPK_FILE" --owner=0 --group=0 \
     INFO package.tgz scripts conf \
     PACKAGE_ICON.PNG PACKAGE_ICON_256.PNG)
