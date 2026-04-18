@@ -175,6 +175,16 @@ service_prestart() {
         return 1
     fi
 
+    if ! "$PYTHON" -c "
+import sys, os
+sys.path.insert(0, os.path.join('${SYNOPKG_PKGDEST}', 'lib'))
+sys.path.insert(0, os.path.join('${SYNOPKG_PKGDEST}', 'lib', 'vendor'))
+import config_manager, notifier, sync_engine
+" >> "$STARTUP_ERR" 2>&1; then
+        log_startup_err "Python module import check failed (see above). Python: $PYTHON"
+        return 1
+    fi
+
     SERVICE_COMMAND="$PYTHON $SCHEDULER"
 }
 

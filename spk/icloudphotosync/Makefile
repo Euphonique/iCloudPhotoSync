@@ -1,5 +1,5 @@
 SPK_NAME = icloudphotosync
-SPK_VERS = 1.1.1
+SPK_VERS = 1.1.2
 SPK_REV  = 1
 SPK_ICON = src/PACKAGE_ICON.PNG
 
