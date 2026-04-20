@@ -28,6 +28,39 @@ class _UrlExpiredError(Exception):
     """Raised when an iCloud CDN URL returns 410 Gone (expired)."""
     pass
 
+
+# Network retry settings
+_NET_RETRY_MAX = 5           # max pause/retry cycles per album batch run
+_NET_RETRY_INTERVAL = 60     # seconds between connectivity checks
+_NET_CONSECUTIVE_FAIL = 10   # consecutive download failures before pausing
+
+
+def _check_connectivity():
+    """Return True if we can reach Apple's CDN (lightweight HEAD request)."""
+    try:
+        r = requests.head("https://www.apple.com", timeout=10)
+        return r.status_code < 500
+    except Exception:
+        return False
+
+
+def _wait_for_connectivity(account_id, max_cycles=_NET_RETRY_MAX):
+    """Block until network is available or max_cycles exhausted.
+
+    Returns True if connectivity was restored, False if we gave up.
+    """
+    for cycle in range(max_cycles):
+        LOGGER.info("Network check %d/%d — waiting %ds...",
+                    cycle + 1, max_cycles, _NET_RETRY_INTERVAL)
+        time.sleep(_NET_RETRY_INTERVAL)
+        if should_stop(account_id):
+            return False
+        if _check_connectivity():
+            LOGGER.info("Network restored after %d checks", cycle + 1)
+            return True
+    LOGGER.warning("Network still down after %d checks, giving up", max_cycles)
+    return False
+
 # Map folder structure config values to strftime-like path builders
 FOLDER_BUILDERS = {
     "year_month_day": lambda ts: _ts_path(ts, "%Y/%m/%d"),
@@ -881,38 +914,76 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                         fpath = jpg_path
             return (photo, fname, fpath, True)
 
-        pool = ThreadPoolExecutor(max_workers=workers)
-        futures = []
-        try:
-            futures = [pool.submit(_process, t) for t in tasks]
-            for fut in as_completed(futures):
-                if should_stop(account_id):
-                    # Signal stop, cancel queued, but let in-flight workers
-                    # finish — _process honors should_stop on its next check.
-                    # Letting them complete avoids leaving .part files when
-                    # we tear down mid-stream.
-                    for f in futures:
-                        f.cancel()
-                    break
-                photo, fname, fpath, ok = fut.result()
-                with progress_lock:
-                    if ok:
-                        if sync_manifest.mark_synced(
-                            account_id, photo.id, album_name, fname, fpath,
-                            checksum=photo.checksum, size=photo.size, created=photo.created
-                        ):
-                            progress.synced_photos += 1
+        pending_tasks = list(tasks)
+        net_retries_used = 0
+
+        while pending_tasks and not should_stop(account_id):
+            pool = ThreadPoolExecutor(max_workers=workers)
+            retry_tasks = []
+            consecutive_fails = 0
+            network_failed = False
+            futures = []
+            try:
+                futures = [pool.submit(_process, t) for t in pending_tasks]
+                for fut in as_completed(futures):
+                    if should_stop(account_id):
+                        for f in futures:
+                            f.cancel()
+                        break
+                    photo, fname, fpath, ok = fut.result()
+                    with progress_lock:
+                        if ok:
+                            consecutive_fails = 0
+                            if sync_manifest.mark_synced(
+                                account_id, photo.id, album_name, fname, fpath,
+                                checksum=photo.checksum, size=photo.size, created=photo.created
+                            ):
+                                progress.synced_photos += 1
+                            else:
+                                progress.failed_photos += 1
                         else:
-                            progress.failed_photos += 1
-                    else:
-                        progress.failed_photos += 1
-                    progress.save_throttled()
-        finally:
-            # wait=True so any in-flight worker can finalize its .part->dest
-            # rename before we return; without this, a stop request leaves
-            # .part files that the next sync would re-download anyway but
-            # also clutters the target tree.
-            pool.shutdown(wait=True)
+                            consecutive_fails += 1
+                            if consecutive_fails >= _NET_CONSECUTIVE_FAIL and not network_failed:
+                                LOGGER.warning(
+                                    "Album '%s': %d consecutive download failures — likely network outage",
+                                    album_name, consecutive_fails)
+                                network_failed = True
+                            if network_failed:
+                                retry_tasks.append((photo, photo.original_url, fpath, fname))
+                            else:
+                                progress.failed_photos += 1
+                        progress.save_throttled()
+            finally:
+                pool.shutdown(wait=True)
+
+            if not retry_tasks or should_stop(account_id):
+                break
+
+            net_retries_used += 1
+            if net_retries_used > _NET_RETRY_MAX:
+                LOGGER.warning("Album '%s': max network retries exhausted, counting %d as failed",
+                               album_name, len(retry_tasks))
+                with progress_lock:
+                    progress.failed_photos += len(retry_tasks)
+                    progress.save()
+                break
+
+            LOGGER.info("Album '%s': pausing for network recovery (%d files to retry, attempt %d/%d)",
+                        album_name, len(retry_tasks), net_retries_used, _NET_RETRY_MAX)
+            progress.error = "Waiting for network... (attempt %d/%d)" % (net_retries_used, _NET_RETRY_MAX)
+            progress.save()
+
+            if not _wait_for_connectivity(account_id):
+                LOGGER.warning("Album '%s': network not restored, counting %d as failed",
+                               album_name, len(retry_tasks))
+                with progress_lock:
+                    progress.failed_photos += len(retry_tasks)
+                    progress.save()
+                break
+
+            progress.error = ""
+            progress.save()
+            pending_tasks = retry_tasks
 
         progress.save()
 
@@ -933,10 +1004,16 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                 off = slice_end - 1
                 while off >= slice_start and not should_stop(account_id):
                     limit = min(batch_size, off - slice_start + 1)
-                    try:
-                        photos = album.photos(limit=limit, offset=off, direction="DESCENDING")
-                    except Exception:
-                        LOGGER.exception("Producer fetch failed at offset=%d", off)
+                    photos = None
+                    for _retry in range(_NET_RETRY_MAX):
+                        try:
+                            photos = album.photos(limit=limit, offset=off, direction="DESCENDING")
+                            break
+                        except Exception:
+                            LOGGER.exception("Producer fetch failed at offset=%d (attempt %d)", off, _retry + 1)
+                            if not _wait_for_connectivity(account_id, max_cycles=3):
+                                break
+                    if photos is None or should_stop(account_id):
                         break
                     if not photos:
                         break
@@ -976,8 +1053,18 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
             direction = "ASCENDING"
             offset = 0
 
+        def _fetch_with_retry(lim, off, dirn):
+            for _retry in range(_NET_RETRY_MAX):
+                try:
+                    return album.photos(limit=lim, offset=off, direction=dirn)
+                except Exception:
+                    LOGGER.exception("Fetch failed at offset=%d (attempt %d)", off, _retry + 1)
+                    if not _wait_for_connectivity(account_id, max_cycles=3):
+                        return None
+            return None
+
         fetch_pool = ThreadPoolExecutor(max_workers=1)
-        next_future = fetch_pool.submit(album.photos, limit=batch_size, offset=offset, direction=direction)
+        next_future = fetch_pool.submit(_fetch_with_retry, batch_size, offset, direction)
 
         while not should_stop(account_id):
             _t_wait = time.time()
@@ -991,7 +1078,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
             if direction == "DESCENDING" and next_offset < 0:
                 next_future = fetch_pool.submit(lambda: [])
             else:
-                next_future = fetch_pool.submit(album.photos, limit=batch_size, offset=next_offset, direction=direction)
+                next_future = fetch_pool.submit(_fetch_with_retry, batch_size, next_offset, direction)
 
             _process_batch(photos, offset)
 
