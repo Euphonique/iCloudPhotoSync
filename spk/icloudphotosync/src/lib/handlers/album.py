@@ -174,6 +174,13 @@ def _list_albums(params):
         except Exception:
             pass
 
+        # Shared Library (iOS 16+ family sharing — separate from shared albums)
+        has_shared_library = False
+        try:
+            has_shared_library = photos_svc.has_shared_library
+        except Exception:
+            pass
+
         # Persist parent relationships in cache
         if cached_parents:
             cache["parents"] = cached_parents
@@ -185,6 +192,7 @@ def _list_albums(params):
         return {"success": True, "data": {
             "albums": album_list,
             "cache_age": cache_age,
+            "has_shared_library": has_shared_library,
         }}
 
     except Exception as e:

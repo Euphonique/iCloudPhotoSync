@@ -595,7 +595,29 @@ def _run_sync_locked(account_id):
                 except Exception:
                     LOGGER.exception("Failed to plan shared albums")
 
+        if sync_config.get("shared_library", {}).get("enabled", False):
+            try:
+                sl_album = photos_svc.shared_library
+                if sl_album:
+                    sl_count = sl_album.photo_count or 0
+                    plan.append(("Shared Library", "shared_library", "", sl_count, 0))
+                else:
+                    LOGGER.info("Shared Library enabled but no SharedSync zone found for account %s", account_id)
+            except Exception:
+                LOGGER.exception("Failed to plan shared library")
+
         progress.total_photos = sum(p[3] for p in plan)
+
+        # Pre-seed skipped count from manifest so the progress bar starts
+        # at the right percentage after a restart (instead of jumping to 0%).
+        # Photos already in the manifest will not increment skipped_photos
+        # again during dedup — see _dedup_preseeded flag in _sync_album.
+        try:
+            manifest_count = sync_manifest.count_unique_records(account_id)
+            progress.skipped_photos = min(manifest_count, progress.total_photos)
+        except Exception:
+            LOGGER.debug("Could not pre-seed progress from manifest")
+
         progress.save()
 
         for album_name, folder_key, subfolder, _count, _latest in plan:
@@ -631,7 +653,9 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
     progress.current_album = album_name
     progress.save()
 
-    if folder_key == "shared_albums":
+    if folder_key == "shared_library":
+        album = photos_svc.shared_library
+    elif folder_key == "shared_albums":
         album = photos_svc.shared_albums.get(album_name)
     else:
         album = photos_svc.albums.get(album_name)
@@ -711,7 +735,8 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                     perf["exists_calls"] += 1
                     if _exists:
                         LOGGER.debug("Skipped (dedup): %s in %s", photo.filename, album_name)
-                        progress.skipped_photos += 1
+                        # Don't increment skipped_photos — these are already
+                        # counted in the manifest pre-seed at sync start.
                         progress.save_throttled()
                         continue
                     else:
@@ -726,7 +751,9 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                 date_subfolder = folder_builder(photo.created)
                 filename = _build_filename(photo, sync_config)
 
-                if folder_key == "shared_albums":
+                if folder_key == "shared_library":
+                    dest_dir = os.path.join(target_dir, "Shared Library", date_subfolder)
+                elif folder_key == "shared_albums":
                     dest_dir = os.path.join(target_dir, "Shared", subfolder, date_subfolder)
                 elif subfolder:
                     dest_dir = os.path.join(target_dir, "Albums", subfolder, date_subfolder)
@@ -828,7 +855,10 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                 ok = _download_file(url, fpath, session=session)
             except _UrlExpiredError:
                 LOGGER.info("URL expired (410) for %s, refreshing...", fname)
-                fresh_url = photos_svc.refresh_photo_url(photo)
+                if folder_key == "shared_library":
+                    fresh_url = photos_svc.refresh_shared_library_photo_url(photo)
+                else:
+                    fresh_url = photos_svc.refresh_photo_url(photo)
                 if fresh_url:
                     try:
                         ok = _download_file(fresh_url, fpath, session=session)

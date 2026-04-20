@@ -52,10 +52,16 @@ class PhotoAlbum:
             self.obj_type = obj_type
 
     @property
+    def _is_shared_library(self):
+        return (self.zone_id or {}).get("zoneName", "").startswith("SharedSync-")
+
+    @property
     def photo_count(self):
         if self._photo_count is None:
             if self.album_type == "folder":
                 self._photo_count = 0
+            elif self._is_shared_library:
+                self._photo_count = self.service._get_shared_library_count()
             elif self.album_type == "shared":
                 self._photo_count = self.service._get_shared_album_count(self)
             else:
@@ -64,6 +70,8 @@ class PhotoAlbum:
 
     def photos(self, limit=200, offset=0, direction="ASCENDING"):
         """Fetch photos in this album."""
+        if self._is_shared_library:
+            return self.service.get_shared_library_photos(limit=limit, offset=offset, direction=direction)
         if self.album_type == "shared":
             return self.service._get_shared_album_photos(self, limit=limit, offset=offset, direction=direction)
         return self.service._get_album_photos(self, limit=limit, offset=offset, direction=direction)
@@ -183,6 +191,8 @@ class PhotosService:
         )
         self._albums = None
         self._shared_albums = None
+        self._shared_library = None
+        self._shared_library_zone = None
 
     def _query(self, payload):
         """Execute a CloudKit records query."""
@@ -474,6 +484,204 @@ class PhotosService:
                 break
 
         return result[:limit]
+
+    # ── Shared Library (iOS 16+ family sharing) ────────────────────
+
+    def _private_zones(self):
+        """List all zones in the private database."""
+        url = "%s/zones/list" % self._service_endpoint
+        response = self.session.post(
+            url,
+            params=self.params,
+            data=json.dumps({}),
+            headers={"Content-Type": "text/plain"},
+        )
+        return response.json()
+
+    def _detect_shared_library_zone(self):
+        """Find the SharedSync-* zone in the private database.
+
+        The iCloud Shared Library (iOS 16+) stores photos in a private
+        zone named 'SharedSync-<UUID>', separate from the personal
+        'PrimarySync' zone.  Returns the zone_id dict or None.
+        """
+        if self._shared_library_zone is not None:
+            return self._shared_library_zone or None
+        try:
+            data = self._private_zones()
+            for zone in data.get("zones", []):
+                zone_id = zone.get("zoneID", {})
+                zone_name = zone_id.get("zoneName", "")
+                if zone_name.startswith("SharedSync-"):
+                    self._shared_library_zone = zone_id
+                    LOGGER.info("Shared Library zone found: %s", zone_name)
+                    return zone_id
+        except Exception:
+            LOGGER.exception("Failed to detect shared library zone")
+        self._shared_library_zone = False
+        return None
+
+    def _query_zone(self, payload, zone_id):
+        """Execute a CloudKit query against a specific private zone."""
+        url = "%s/records/query" % self._service_endpoint
+        payload["zoneID"] = zone_id
+        response = self.session.post(
+            url,
+            params=self.params,
+            data=json.dumps(payload),
+            headers={"Content-Type": "text/plain"},
+        )
+        data = response.json()
+        self._check_cloudkit_adp(data)
+        return data
+
+    @property
+    def has_shared_library(self):
+        """Return True if the account has an iCloud Shared Library."""
+        return self._detect_shared_library_zone() is not None
+
+    @property
+    def shared_library(self):
+        """Returns a PhotoAlbum representing the Shared Library, or None."""
+        if self._shared_library is not None:
+            return self._shared_library or None
+
+        zone_id = self._detect_shared_library_zone()
+        if not zone_id:
+            self._shared_library = False
+            return None
+
+        self._shared_library = PhotoAlbum(
+            self, "Shared Library", album_type="all", zone_id=zone_id,
+        )
+        return self._shared_library
+
+    def _get_shared_library_count(self):
+        """Get photo count for the Shared Library zone."""
+        zone_id = self._detect_shared_library_zone()
+        if not zone_id:
+            return 0
+        try:
+            url = "%s/internal/records/query/batch" % self._service_endpoint
+            payload = {
+                "batch": [{
+                    "resultsLimit": 1,
+                    "query": {
+                        "filterBy": {
+                            "fieldName": "indexCountID",
+                            "fieldValue": {
+                                "type": "STRING_LIST",
+                                "value": ["CPLAssetByAssetDateWithoutHiddenOrDeleted"],
+                            },
+                            "comparator": "IN",
+                        },
+                        "recordType": "HyperionIndexCountLookup",
+                    },
+                    "zoneWide": True,
+                    "zoneID": zone_id,
+                }],
+            }
+            response = self.session.post(
+                url,
+                params=self.params,
+                data=json.dumps(payload),
+                headers={"Content-Type": "text/plain"},
+            )
+            data = response.json()
+            records = data.get("batch", [{}])[0].get("records", [])
+            if records:
+                return records[0].get("fields", {}).get("itemCount", {}).get("value", 0)
+        except Exception:
+            LOGGER.exception("Failed to get shared library count")
+        return 0
+
+    def get_shared_library_photos(self, limit=200, offset=0, direction="ASCENDING"):
+        """Fetch photos from the Shared Library zone."""
+        zone_id = self._detect_shared_library_zone()
+        if not zone_id:
+            return []
+
+        result = []
+        current_offset = offset
+        for _ in range(max(limit, 20)):
+            if len(result) >= limit:
+                break
+
+            data = self._query_zone({
+                "query": {
+                    "filterBy": [
+                        {"fieldName": "startRank",
+                         "fieldValue": {"type": "INT64", "value": current_offset},
+                         "comparator": "EQUALS"},
+                        {"fieldName": "direction",
+                         "fieldValue": {"type": "STRING", "value": direction},
+                         "comparator": "EQUALS"},
+                    ],
+                    "recordType": "CPLAssetAndMasterByAssetDateWithoutHiddenOrDeleted",
+                },
+                "resultsLimit": max((limit - len(result)) * 2, 4),
+            }, zone_id)
+
+            masters = {}
+            assets = {}
+            for record in data.get("records", []):
+                rt = record.get("recordType", "")
+                rn = record.get("recordName", "")
+                if rt == "CPLMaster":
+                    masters[rn] = record
+                elif rt == "CPLAsset":
+                    ref = record.get("fields", {}).get(
+                        "masterRef", {}
+                    ).get("value", {}).get("recordName")
+                    if ref:
+                        assets[ref] = record
+
+            batch = []
+            for master_id, master in masters.items():
+                asset = assets.get(master_id)
+                batch.append(PhotoAsset(master, asset))
+
+            if not batch:
+                break
+
+            result.extend(batch)
+            step = len(batch) if direction == "ASCENDING" else -len(batch)
+            current_offset += step
+            if current_offset < 0:
+                break
+
+        return result[:limit]
+
+    def refresh_shared_library_photo_url(self, photo):
+        """Re-fetch a shared library photo's master record for fresh URLs."""
+        zone_id = self._detect_shared_library_zone()
+        if not zone_id:
+            return None
+        try:
+            url = "%s/records/lookup" % self._service_endpoint
+            payload = {
+                "records": [
+                    {"recordName": photo.id, "zoneID": zone_id}
+                ],
+            }
+            response = self.session.post(
+                url,
+                params=self.params,
+                data=json.dumps(payload),
+                headers={"Content-Type": "text/plain"},
+            )
+            data = response.json()
+            for record in data.get("records", []):
+                if record.get("recordName") == photo.id:
+                    orig = record.get("fields", {}).get(
+                        "resOriginalRes", {}).get("value", {})
+                    url = orig.get("downloadURL")
+                    if url:
+                        photo._master = record
+                        return PhotoAsset._fix_url(url)
+        except Exception:
+            LOGGER.exception("Failed to refresh shared library URL for %s", photo.id)
+        return None
 
     # ── Shared Albums ──────────────────────────────────────────────
 
