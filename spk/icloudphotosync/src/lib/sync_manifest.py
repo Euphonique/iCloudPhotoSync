@@ -163,6 +163,16 @@ def get_stats(account_id):
         conn.close()
 
 
+def count_unique_records(account_id):
+    """Count distinct record_ids across all albums for an account."""
+    conn = _connect(account_id)
+    try:
+        row = conn.execute("SELECT COUNT(DISTINCT record_id) as c FROM synced_photos").fetchone()
+        return row["c"] if row else 0
+    finally:
+        conn.close()
+
+
 def remove_album(account_id, album):
     """Remove all sync records for an album."""
     conn = _connect(account_id)

@@ -249,6 +249,10 @@ def get_sync_config(account_id):
             "folder_structure": "flat",
             "selected": {},
         },
+        "shared_library": {
+            "enabled": False,
+            "folder_structure": "year_month",
+        },
         "filenames": "original",  # original, date_based
         "conflict": "skip",  # skip, overwrite, rename
         "formats": "original",  # original, jpg_only, both

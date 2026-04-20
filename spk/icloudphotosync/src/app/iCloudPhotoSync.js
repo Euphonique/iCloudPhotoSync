@@ -956,7 +956,12 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
                 var statusMsg = SYNO.SDS.iCloudPhotoSync._T("overview:status_files_syncing");
                 if (data.total_photos > 0) {
                     pct = Math.min(100, Math.round(processed * 100 / data.total_photos));
-                    progressText = SYNO.SDS.iCloudPhotoSync._T("overview:progress_files", [pct, processed, data.total_photos]);
+                    var failed = data.failed_photos || 0;
+                    if (failed > 0) {
+                        progressText = SYNO.SDS.iCloudPhotoSync._T("overview:progress_files_failed", [pct, processed, data.total_photos, failed]);
+                    } else {
+                        progressText = SYNO.SDS.iCloudPhotoSync._T("overview:progress_files", [pct, processed, data.total_photos]);
+                    }
                     if (data.current_album) progressText += " (" + data.current_album + ")";
                     statusMsg = progressText;
                 }
@@ -2282,6 +2287,17 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
                     { xtype: "displayfield", hideLabel: true,
                       value: '<div style="font-size: 11px; color: #888; margin: 2px 0 0 145px;">' + SYNO.SDS.iCloudPhotoSync._T("settings:help_shared_selection") + '</div>' }
                 ]},
+                { xtype: "syno_fieldset", title: SYNO.SDS.iCloudPhotoSync._T("settings:section_shared_library"), items: [
+                    { xtype: "syno_checkbox", fieldLabel: SYNO.SDS.iCloudPhotoSync._T("settings:label_album_sync"), name: "shared_library_enabled",
+                      boxLabel: SYNO.SDS.iCloudPhotoSync._T("settings:checkbox_shared_library"), checked: false },
+                    { xtype: "syno_combobox", fieldLabel: SYNO.SDS.iCloudPhotoSync._T("settings:label_folder_structure"), name: "shared_library_folder",
+                      store: new Ext.data.ArrayStore({ fields: ["val", "label"], data: folderOptions }),
+                      displayField: "label", valueField: "val",
+                      mode: "local", triggerAction: "all", editable: false,
+                      value: "year_month", anchor: "100%" },
+                    { xtype: "displayfield", hideLabel: true,
+                      value: '<div style="font-size: 11px; color: #888; margin: 2px 0 0 145px;">' + SYNO.SDS.iCloudPhotoSync._T("settings:help_shared_library") + '</div>' }
+                ]},
                 { xtype: "syno_fieldset", title: SYNO.SDS.iCloudPhotoSync._T("settings:section_files"), items: [
                     { xtype: "syno_combobox", fieldLabel: SYNO.SDS.iCloudPhotoSync._T("settings:label_filenames"), name: "filenames",
                       store: new Ext.data.ArrayStore({ fields: ["val", "label"], data: [
@@ -2414,6 +2430,10 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
                 if (f("shared_enabled")) f("shared_enabled").setValue(!!data.shared_albums.enabled);
                 if (f("shared_folder")) f("shared_folder").setValue(data.shared_albums.folder_structure || "flat");
             }
+            if (data.shared_library) {
+                if (f("shared_library_enabled")) f("shared_library_enabled").setValue(!!data.shared_library.enabled);
+                if (f("shared_library_folder")) f("shared_library_folder").setValue(data.shared_library.folder_structure || "year_month");
+            }
 
             if (f("filenames")) f("filenames").setValue(data.filenames || "original");
             if (f("conflict")) f("conflict").setValue(data.conflict || "skip");
@@ -2442,6 +2462,10 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
             shared_albums: {
                 enabled: f("shared_enabled") ? f("shared_enabled").getValue() : false,
                 folder_structure: f("shared_folder") ? f("shared_folder").getValue() : "flat"
+            },
+            shared_library: {
+                enabled: f("shared_library_enabled") ? f("shared_library_enabled").getValue() : false,
+                folder_structure: f("shared_library_folder") ? f("shared_library_folder").getValue() : "year_month"
             },
             filenames: f("filenames") ? f("filenames").getValue() : "original",
             conflict: f("conflict") ? f("conflict").getValue() : "skip",
