@@ -145,6 +145,7 @@ help_shared_selection	=	"Geteilte Alben im Tab „Alben" per Checkbox auswählen
 section_shared_library	=	"Geteilte Mediathek (iOS 16+)"
 checkbox_shared_library	=	"iCloud Geteilte Mediathek synchronisieren"
 help_shared_library	=	"Synchronisiert Fotos aus der geteilten Familien-Mediathek. Erfordert eine aktive geteilte iCloud-Mediathek."
+help_shared_library_unavailable	=	"Keine geteilte Mediathek für diesen Account gefunden. Um diese Funktion zu nutzen, richte eine geteilte iCloud-Mediathek auf einem iPhone/iPad ein (Einstellungen → Fotos → Geteilte Mediathek). Siehe: https://support.apple.com/de-de/108283"
 section_files	=	"Dateien"
 label_filenames	=	"Dateinamen"
 filename_original	=	"Original beibehalten"
@@ -165,6 +166,9 @@ msg_target_dir_changed	=	"Der Zielordner wurde geändert.<br>Alt: {0}<br>Neu: {1
 dialog_change_target_dir	=	"Zielordner ändern"
 error_move_not_started	=	"Verschiebung konnte nicht gestartet werden."
 error_save_failed	=	"Einstellungen konnten nicht gespeichert werden."
+path_not_writable_title	=	"Zielordner nicht beschreibbar"
+path_not_writable_acl	=	"Der Ordner \"{0}\" ist für das Paket nicht beschreibbar.<br><br>So beheben:<br>1. Öffne <b>Systemsteuerung → Gemeinsamer Ordner</b><br>2. Zielfreigabe wählen → <b>Bearbeiten → Berechtigungen</b><br>3. Dropdown von „Lokale Benutzer" auf <b>„Systeminterne Benutzer"</b> umschalten<br>4. <b>Lesen/Schreiben</b> für „iCloudPhotoSync" aktivieren<br>5. Speichern"
+path_not_writable_no_acl	=	"Der Ordner \"{0}\" liegt auf einem Laufwerk mit Dateisystem <b>{1}</b>.<br><br>Dieses Dateisystem unterstützt keine benutzerspezifischen Berechtigungen. Dem Paket kann kein Schreibzugriff gewährt werden.<br><br><b>Lösungen:</b><br>• Einen gemeinsamen Ordner auf einem internen Volume verwenden (ext4/Btrfs)<br>• Das externe Laufwerk als ext4 neu formatieren (Daten werden gelöscht)"
 
 [log]
 paging_display	=	"Einträge {0} - {1} von {2}"

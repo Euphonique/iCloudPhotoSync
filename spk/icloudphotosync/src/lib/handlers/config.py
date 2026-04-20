@@ -38,6 +38,8 @@ def handle(params):
         return _set_config(params)
     if action == "set_album":
         return _set_album(params)
+    if action == "validate_path":
+        return _validate_path(params)
 
     return {"success": False, "error": {"code": 101, "message": "Unknown action"}}
 
@@ -48,7 +50,41 @@ def _get_config(params):
         return {"success": False, "error": {"code": 301, "message": "account_id required"}}
 
     config = config_manager.get_sync_config(account_id)
+
+    # Include cached shared library availability so the UI can disable the toggle
+    cache_path = os.path.join(config_manager.get_account_dir(account_id), "album_cache.json")
+    try:
+        with open(cache_path, "r") as f:
+            cache = json.load(f)
+        config["has_shared_library"] = cache.get("has_shared_library", False)
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        config["has_shared_library"] = False
+
     return {"success": True, "data": config}
+
+
+def _validate_path(params):
+    """Check if target path is writable and return filesystem diagnostics."""
+    path = params.getvalue("path", "").strip()
+    if not path:
+        return {"success": False, "error": {"code": 301, "message": "path required"}}
+
+    from sync_engine import _writable, _get_mount_info
+
+    writable = _writable(path)
+    mp, fstype, opts = _get_mount_info(path)
+
+    result = {
+        "writable": writable,
+        "mountpoint": mp,
+        "fstype": fstype,
+    }
+
+    if not writable and fstype:
+        no_acl = fstype.lower() in ("vfat", "exfat", "ntfs", "fuseblk", "msdos")
+        result["no_acl_fs"] = no_acl
+
+    return {"success": True, "data": result}
 
 
 def _get_dsm_username():

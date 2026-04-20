@@ -145,6 +145,7 @@ help_shared_selection	=	"Select shared albums via checkbox on the 'Albums' tab."
 section_shared_library	=	"Shared Library (iOS 16+)"
 checkbox_shared_library	=	"Sync iCloud Shared Library"
 help_shared_library	=	"Syncs photos from the shared family library. Requires an active iCloud Shared Library."
+help_shared_library_unavailable	=	"No Shared Library found for this account. To use this feature, set up an iCloud Shared Photo Library on an iPhone/iPad (Settings → Photos → Shared Library). See: https://support.apple.com/en-us/108283"
 section_files	=	"Files"
 label_filenames	=	"Filenames"
 filename_original	=	"Keep original"
@@ -165,6 +166,9 @@ msg_target_dir_changed	=	"The target folder has changed.<br>Old: {0}<br>New: {1}
 dialog_change_target_dir	=	"Change target folder"
 error_move_not_started	=	"Move could not be started."
 error_save_failed	=	"Settings could not be saved."
+path_not_writable_title	=	"Target folder not writable"
+path_not_writable_acl	=	"The folder \"{0}\" is not writable by the package.<br><br>To fix this:<br>1. Open <b>Control Panel → Shared Folder</b><br>2. Select the target share → <b>Edit → Permissions</b><br>3. Change the dropdown from \"Local Users\" to <b>\"System internal user\"</b><br>4. Check <b>Read/Write</b> for \"iCloudPhotoSync\"<br>5. Click Save"
+path_not_writable_no_acl	=	"The folder \"{0}\" is on a drive formatted as <b>{1}</b>.<br><br>This filesystem does not support user-level permissions. The package cannot be granted write access.<br><br><b>Solutions:</b><br>• Use a shared folder on an internal volume (ext4/Btrfs)<br>• Reformat the external drive as ext4 (data will be erased)"
 
 [log]
 paging_display	=	"Entries {0} - {1} of {2}"

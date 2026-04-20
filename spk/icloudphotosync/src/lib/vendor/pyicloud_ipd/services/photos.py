@@ -509,13 +509,17 @@ class PhotosService:
             return self._shared_library_zone or None
         try:
             data = self._private_zones()
-            for zone in data.get("zones", []):
+            zones = data.get("zones", [])
+            zone_names = [z.get("zoneID", {}).get("zoneName", "?") for z in zones]
+            LOGGER.debug("Private zones: %s", zone_names)
+            for zone in zones:
                 zone_id = zone.get("zoneID", {})
                 zone_name = zone_id.get("zoneName", "")
                 if zone_name.startswith("SharedSync-"):
                     self._shared_library_zone = zone_id
                     LOGGER.info("Shared Library zone found: %s", zone_name)
                     return zone_id
+            LOGGER.info("No SharedSync zone among %d zones: %s", len(zones), zone_names)
         except Exception:
             LOGGER.exception("Failed to detect shared library zone")
         self._shared_library_zone = False
