@@ -2289,13 +2289,13 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
                 ]},
                 { xtype: "syno_fieldset", title: SYNO.SDS.iCloudPhotoSync._T("settings:section_shared_library"), items: [
                     { xtype: "syno_checkbox", fieldLabel: SYNO.SDS.iCloudPhotoSync._T("settings:label_album_sync"), name: "shared_library_enabled",
-                      boxLabel: SYNO.SDS.iCloudPhotoSync._T("settings:checkbox_shared_library"), checked: false },
+                      boxLabel: SYNO.SDS.iCloudPhotoSync._T("settings:checkbox_shared_library"), checked: false, disabled: true },
                     { xtype: "syno_combobox", fieldLabel: SYNO.SDS.iCloudPhotoSync._T("settings:label_folder_structure"), name: "shared_library_folder",
                       store: new Ext.data.ArrayStore({ fields: ["val", "label"], data: folderOptions }),
                       displayField: "label", valueField: "val",
                       mode: "local", triggerAction: "all", editable: false,
-                      value: "year_month", anchor: "100%" },
-                    { xtype: "displayfield", hideLabel: true,
+                      value: "year_month", anchor: "100%", disabled: true },
+                    { xtype: "displayfield", hideLabel: true, name: "shared_library_hint",
                       value: '<div style="font-size: 11px; color: #888; margin: 2px 0 0 145px;">' + SYNO.SDS.iCloudPhotoSync._T("settings:help_shared_library") + '</div>' }
                 ]},
                 { xtype: "syno_fieldset", title: SYNO.SDS.iCloudPhotoSync._T("settings:section_files"), items: [
@@ -2385,6 +2385,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
                             self.targetDirField.setValue("/" + p);
                         }
                         ch.close();
+                        self._validateTargetPath(self.targetDirField.getValue());
                     }
                 }
             });
@@ -2397,6 +2398,38 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
                 }
             }, this, false, this.targetDirField.getValue());
         }
+    },
+
+    _validateTargetPath: function (path) {
+        if (!path) return;
+        var self = this;
+        this.appWin.apiRequest("config", {
+            action: "validate_path",
+            path: path
+        }, function (success, data) {
+            if (!success || !data) return;
+            if (data.writable) return;
+
+            var title = SYNO.SDS.iCloudPhotoSync._T("settings:path_not_writable_title");
+            var msg;
+            if (data.no_acl_fs) {
+                msg = SYNO.SDS.iCloudPhotoSync._T("settings:path_not_writable_no_acl", [
+                    Ext.util.Format.htmlEncode(path),
+                    Ext.util.Format.htmlEncode(data.fstype || "?")
+                ]);
+            } else {
+                msg = SYNO.SDS.iCloudPhotoSync._T("settings:path_not_writable_acl", [
+                    Ext.util.Format.htmlEncode(path)
+                ]);
+            }
+            SYNO.SDS.iCloudPhotoSync._showDialog({
+                title: title,
+                msg: msg,
+                level: "error",
+                width: 560,
+                height: 320
+            });
+        });
     },
 
     _field: function (name) {
@@ -2433,6 +2466,17 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
             if (data.shared_library) {
                 if (f("shared_library_enabled")) f("shared_library_enabled").setValue(!!data.shared_library.enabled);
                 if (f("shared_library_folder")) f("shared_library_folder").setValue(data.shared_library.folder_structure || "year_month");
+            }
+            // Enable/disable shared library controls based on availability
+            var slAvailable = !!data.has_shared_library;
+            if (f("shared_library_enabled")) f("shared_library_enabled").setDisabled(!slAvailable);
+            if (f("shared_library_folder")) f("shared_library_folder").setDisabled(!slAvailable);
+            if (f("shared_library_hint")) {
+                if (slAvailable) {
+                    f("shared_library_hint").setValue('<div style="font-size: 11px; color: #888; margin: 2px 0 0 145px;">' + SYNO.SDS.iCloudPhotoSync._T("settings:help_shared_library") + '</div>');
+                } else {
+                    f("shared_library_hint").setValue('<div style="font-size: 11px; color: #e67700; margin: 2px 0 0 145px;">' + SYNO.SDS.iCloudPhotoSync._T("settings:help_shared_library_unavailable") + '</div>');
+                }
             }
 
             if (f("filenames")) f("filenames").setValue(data.filenames || "original");

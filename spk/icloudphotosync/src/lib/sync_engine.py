@@ -189,6 +189,25 @@ def _writable(path):
         return False
 
 
+def _get_mount_info(path):
+    """Return (mountpoint, fstype, mount_options) for the given path, or Nones."""
+    try:
+        real = os.path.realpath(path)
+        best_mp, best_fs, best_opts = "/", "unknown", ""
+        with open("/proc/mounts", "r") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                mp, fs, opts = parts[1], parts[2], parts[3]
+                if real == mp or real.startswith(mp.rstrip("/") + "/"):
+                    if len(mp) > len(best_mp):
+                        best_mp, best_fs, best_opts = mp, fs, opts
+        return best_mp, best_fs, best_opts
+    except Exception:
+        return None, None, None
+
+
 def _log_path_diagnostics(path):
     """Log detailed permission info so support requests are actionable."""
     import grp
@@ -209,6 +228,11 @@ def _log_path_diagnostics(path):
         LOGGER.error("  Running as: uid=%s(%s) groups=%s", uid, uname, ",".join(gnames))
     except Exception:
         pass
+
+    # Log filesystem type and mount options
+    mp, fs, opts = _get_mount_info(path)
+    if mp:
+        LOGGER.error("  Filesystem: mountpoint=%s type=%s opts=%s", mp, fs, opts)
 
     # Walk up the path tree to find where permissions diverge.
     parts = path.rstrip("/")

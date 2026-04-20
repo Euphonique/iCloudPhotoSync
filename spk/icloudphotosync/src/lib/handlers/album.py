@@ -181,10 +181,11 @@ def _list_albums(params):
         except Exception:
             pass
 
-        # Persist parent relationships in cache
+        # Persist parent relationships and shared library status in cache
+        cache["has_shared_library"] = has_shared_library
         if cached_parents:
             cache["parents"] = cached_parents
-            _save_cache(account_id, cache)
+        _save_cache(account_id, cache)
 
         album_list.sort(key=_album_sort_key)
 

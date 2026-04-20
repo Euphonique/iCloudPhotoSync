@@ -103,16 +103,18 @@ def _probe_backends():
 
 _BACKEND = _probe_backends()
 _PILLOW_OK = False
-if not _BACKEND:
-    try:
-        from PIL import Image  # noqa: F401
-        import pillow_heif
-        pillow_heif.register_heif_opener()
-        _PILLOW_OK = True
-    except Exception:
-        _PILLOW_OK = False
+try:
+    from PIL import Image  # noqa: F401
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+    _PILLOW_OK = True
+except Exception:
+    _PILLOW_OK = False
 
-if _BACKEND:
+if _BACKEND and _PILLOW_OK:
+    LOGGER.info("HEIC converter: %s (%s) at %s, Pillow fallback available",
+                _BACKEND["cmd"], _BACKEND["source"], _BACKEND["binary"])
+elif _BACKEND:
     LOGGER.info("HEIC converter: %s (%s) at %s", _BACKEND["cmd"], _BACKEND["source"], _BACKEND["binary"])
 elif _PILLOW_OK:
     LOGGER.info("HEIC converter: Pillow + pillow-heif")
@@ -152,7 +154,13 @@ def convert_to_jpg(heic_path, jpg_path=None, quality=92):
         jpg_path = os.path.splitext(heic_path)[0] + ".jpg"
 
     if _BACKEND:
-        return _convert_cli(heic_path, jpg_path, quality)
+        result = _convert_cli(heic_path, jpg_path, quality)
+        if result:
+            return result
+        if _PILLOW_OK:
+            LOGGER.info("CLI backend failed, falling back to Pillow for %s", heic_path)
+            return _convert_pillow(heic_path, jpg_path, quality)
+        return None
     if _PILLOW_OK:
         return _convert_pillow(heic_path, jpg_path, quality)
     return None

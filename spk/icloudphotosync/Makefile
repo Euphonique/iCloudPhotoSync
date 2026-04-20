@@ -1,5 +1,5 @@
 SPK_NAME = icloudphotosync
-SPK_VERS = 1.3.0
+SPK_VERS = 1.3.1
 SPK_REV  = 1
 SPK_ICON = src/PACKAGE_ICON.PNG
 
@@ -11,7 +11,7 @@ UNSUPPORTED_ARCHS = $(OLD_PPC_ARCHS) $(ARMv5_ARCHS)
 MAINTAINER     = Pascal Pagel
 DESCRIPTION    = Automatically mirrors your iCloud photo library to a Synology NAS. Supports multi-account setups, incremental sync, album selection, HEIC conversion, and scheduled operation.
 DISPLAY_NAME   = iCloud Photo Sync
-CHANGELOG      = Initial spksrc release.
+CHANGELOG      = Fix HEIC conversion fallback to Pillow when ImageMagick lacks HEIC support. Disable Shared Library checkbox when no SharedSync zone found. Validate target directory permissions on path selection with filesystem-aware diagnostics.
 
 HOMEPAGE   = https://github.com/SynoCommunity/spksrc
 LICENSE    = MIT
