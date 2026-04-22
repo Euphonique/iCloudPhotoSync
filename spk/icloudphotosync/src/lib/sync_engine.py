@@ -649,7 +649,12 @@ def _run_sync_locked(account_id):
             album_metas = [(name,) + _album_meta(name) for name in enabled_albums]
             album_metas.sort(key=lambda t: t[2], reverse=True)
             for name, count, latest in album_metas:
-                plan.append((name, "albums", name, count, latest))
+                alb = photos_svc.albums.get(name)
+                if alb and alb.parent_folder:
+                    sub = os.path.join(alb.parent_folder, name)
+                else:
+                    sub = name
+                plan.append((name, "albums", sub, count, latest))
 
         if sync_config.get("shared_albums", {}).get("enabled", False):
             selected_shared = sync_config.get("shared_albums", {}).get("selected", {})
@@ -700,7 +705,8 @@ def _run_sync_locked(account_id):
                 account_id, photos_svc, album_name,
                 target_dir, sync_config, progress,
                 folder_key=folder_key,
-                subfolder=subfolder
+                subfolder=subfolder,
+                client=client
             )
 
         if should_stop(account_id):
@@ -721,7 +727,7 @@ def _run_sync_locked(account_id):
     return progress
 
 
-def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, progress, folder_key, subfolder):
+def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, progress, folder_key, subfolder, client=None):
     """Sync a single album."""
     progress.current_album = album_name
     progress.save()
@@ -908,6 +914,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
 
         workers = max(1, min(8, int(sync_config.get("parallel_downloads", 4) or 4)))
         formats = sync_config.get("formats", "original")
+        jpg_quality = max(10, min(100, int(sync_config.get("jpg_quality", 85) or 85)))
 
         # One-shot warning per sync if the user requested JPG output but no
         # converter is available. Without this, sync silently leaves HEIC
@@ -921,50 +928,40 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
             )
 
         def _process(task):
-            """Returns (photo, fname, fpath, ok, is_conn_error)."""
+            """Returns (photo, fname, fpath, ok, is_conn_error, is_url_expired)."""
             photo, url, fpath, fname = task
             if should_stop(account_id):
-                return (photo, fname, fpath, False, False)
+                return (photo, fname, fpath, False, False, False)
             try:
                 ok = _download_file(url, fpath, session=session)
             except _UrlExpiredError:
-                LOGGER.info("URL expired (410) for %s, refreshing...", fname)
-                if folder_key == "shared_library":
-                    fresh_url = photos_svc.refresh_shared_library_photo_url(photo)
-                else:
-                    fresh_url = photos_svc.refresh_photo_url(photo)
-                if fresh_url:
-                    try:
-                        ok = _download_file(fresh_url, fpath, session=session)
-                    except _UrlExpiredError:
-                        LOGGER.error("URL expired again after refresh for %s", fname)
-                        ok = False
-                else:
-                    LOGGER.error("Could not refresh URL for %s", fname)
-                    ok = False
+                return (photo, fname, fpath, False, False, True)
             except Exception as e:
-                ok = False
                 if _is_connection_error(e):
-                    return (photo, fname, fpath, False, True)
+                    return (photo, fname, fpath, False, True, False)
+                return (photo, fname, fpath, False, False, False)
             if not ok:
-                return (photo, fname, fpath, False, False)
+                return (photo, fname, fpath, False, False, False)
             if formats in ("jpg_only", "both") and heic_converter.is_heic(fname):
                 if heic_converter.can_convert():
-                    jpg_path = heic_converter.convert_to_jpg(fpath)
+                    jpg_path = heic_converter.convert_to_jpg(fpath, quality=jpg_quality)
                     if jpg_path and formats == "jpg_only":
                         try:
                             os.remove(fpath)
                         except OSError:
                             pass
                         fpath = jpg_path
-            return (photo, fname, fpath, True, False)
+            return (photo, fname, fpath, True, False, False)
 
         pending_tasks = list(tasks)
         net_retries_used = 0
+        url_refresh_used = 0
+        _URL_REFRESH_MAX = 3
 
         while pending_tasks and not should_stop(account_id):
             pool = ThreadPoolExecutor(max_workers=workers)
-            retry_tasks = []
+            conn_retry_tasks = []
+            expired_tasks = []
             consecutive_fails = 0
             network_failed = False
             futures = []
@@ -975,7 +972,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                         for f in futures:
                             f.cancel()
                         break
-                    photo, fname, fpath, ok, is_conn_err = fut.result()
+                    photo, fname, fpath, ok, is_conn_err, is_url_expired = fut.result()
                     with progress_lock:
                         if ok:
                             consecutive_fails = 0
@@ -986,6 +983,8 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                                 progress.synced_photos += 1
                             else:
                                 progress.failed_photos += 1
+                        elif is_url_expired:
+                            expired_tasks.append((photo, fpath, fname))
                         else:
                             if is_conn_err:
                                 consecutive_fails += 1
@@ -997,37 +996,88 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                                     album_name, consecutive_fails)
                                 network_failed = True
                             if network_failed and is_conn_err:
-                                retry_tasks.append((photo, photo.original_url, fpath, fname))
+                                conn_retry_tasks.append((photo, photo.original_url, fpath, fname))
                             else:
                                 progress.failed_photos += 1
                         progress.save_throttled()
             finally:
                 pool.shutdown(wait=True)
 
+            # Batch-refresh expired CDN URLs
+            refresh_retry_tasks = []
+            if expired_tasks and not should_stop(account_id):
+                url_refresh_used += 1
+                if url_refresh_used <= _URL_REFRESH_MAX:
+                    refresh_photos = [t[0] for t in expired_tasks]
+                    zone_id = (photos_svc._detect_shared_library_zone()
+                               if folder_key == "shared_library" else None)
+                    fresh_urls = {}
+                    try:
+                        fresh_urls = photos_svc.batch_refresh_photo_urls(
+                            refresh_photos, zone_id=zone_id)
+                    except Exception:
+                        LOGGER.warning("Batch URL refresh failed, attempting session re-auth...")
+                        try:
+                            if client and client.restore_session():
+                                photos_svc.session = client.api.session
+                                fresh_urls = photos_svc.batch_refresh_photo_urls(
+                                    refresh_photos, zone_id=zone_id)
+                            else:
+                                LOGGER.error("Session re-auth failed")
+                        except Exception:
+                            LOGGER.exception("Batch refresh failed after re-auth")
+                    refreshed = 0
+                    for photo, fpath, fname in expired_tasks:
+                        url = fresh_urls.get(photo.id)
+                        if url:
+                            refresh_retry_tasks.append((photo, url, fpath, fname))
+                            refreshed += 1
+                        else:
+                            with progress_lock:
+                                progress.failed_photos += 1
+                    if refreshed:
+                        LOGGER.info("Batch-refreshed %d/%d expired URLs",
+                                    refreshed, len(expired_tasks))
+                else:
+                    LOGGER.warning("Max URL refresh retries (%d) exhausted, "
+                                   "counting %d as failed",
+                                   _URL_REFRESH_MAX, len(expired_tasks))
+                    with progress_lock:
+                        progress.failed_photos += len(expired_tasks)
+                        progress.save()
+
+            retry_tasks = refresh_retry_tasks + conn_retry_tasks
+
             if not retry_tasks or should_stop(account_id):
                 break
 
-            net_retries_used += 1
-            if net_retries_used > _NET_RETRY_MAX:
-                LOGGER.warning("Album '%s': max network retries exhausted, counting %d as failed",
-                               album_name, len(retry_tasks))
-                with progress_lock:
-                    progress.failed_photos += len(retry_tasks)
+            # Handle connection retries with network wait
+            if conn_retry_tasks:
+                net_retries_used += 1
+                if net_retries_used > _NET_RETRY_MAX:
+                    LOGGER.warning("Album '%s': max network retries exhausted, counting %d as failed",
+                                   album_name, len(conn_retry_tasks))
+                    with progress_lock:
+                        progress.failed_photos += len(conn_retry_tasks)
+                        progress.save()
+                    retry_tasks = refresh_retry_tasks
+                    if not retry_tasks:
+                        break
+                else:
+                    LOGGER.info("Album '%s': pausing for network recovery (%d files to retry, attempt %d/%d)",
+                                album_name, len(conn_retry_tasks), net_retries_used, _NET_RETRY_MAX)
+                    progress.error = "Waiting for network... (attempt %d/%d)" % (net_retries_used, _NET_RETRY_MAX)
                     progress.save()
-                break
 
-            LOGGER.info("Album '%s': pausing for network recovery (%d files to retry, attempt %d/%d)",
-                        album_name, len(retry_tasks), net_retries_used, _NET_RETRY_MAX)
-            progress.error = "Waiting for network... (attempt %d/%d)" % (net_retries_used, _NET_RETRY_MAX)
-            progress.save()
-
-            if not _wait_for_connectivity(account_id):
-                LOGGER.warning("Album '%s': network not restored, counting %d as failed",
-                               album_name, len(retry_tasks))
-                with progress_lock:
-                    progress.failed_photos += len(retry_tasks)
-                    progress.save()
-                break
+                    if not _wait_for_connectivity(account_id):
+                        LOGGER.warning("Album '%s': network not restored, counting %d as failed",
+                                       album_name, len(conn_retry_tasks))
+                        with progress_lock:
+                            progress.failed_photos += len(conn_retry_tasks)
+                            progress.save()
+                        retry_tasks = refresh_retry_tasks
+                        if not retry_tasks:
+                            break
 
             progress.error = ""
             progress.save()
@@ -1064,7 +1114,6 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                                     break
                             else:
                                 time.sleep(2 + _retry * 3)
-                                break
                     if photos is None or should_stop(account_id):
                         break
                     if not photos:

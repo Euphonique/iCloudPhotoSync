@@ -256,6 +256,7 @@ def get_sync_config(account_id):
         "filenames": "original",  # original, date_based
         "conflict": "skip",  # skip, overwrite, rename
         "formats": "original",  # original, jpg_only, both
+        "jpg_quality": 85,  # 10-100, JPEG quality for HEIC conversion
         "format_folders": False,  # separate HEIC/JPG subfolders
         "parallel_downloads": 4,  # 1, 2, 4, 8
         "sync_interval_hours": 6,

@@ -2,6 +2,7 @@
 import base64
 import json
 import logging
+import time
 
 LOGGER = logging.getLogger(__name__)
 
@@ -207,12 +208,13 @@ class PhotosService:
         self._check_cloudkit_adp(data)
         return data
 
-    def _lookup_records(self, record_names):
+    def _lookup_records(self, record_names, zone_id=None):
         """Fetch records by recordName via CloudKit records/lookup."""
         url = "%s/records/lookup" % self._service_endpoint
+        zid = zone_id or self.ZONE_ID
         payload = {
             "records": [
-                {"recordName": rn, "zoneID": self.ZONE_ID}
+                {"recordName": rn, "zoneID": zid}
                 for rn in record_names
             ],
         }
@@ -222,26 +224,70 @@ class PhotosService:
             data=json.dumps(payload),
             headers={"Content-Type": "text/plain"},
         )
-        return response.json()
+        data = response.json()
+        self._check_cloudkit_adp(data)
+        return data
 
-    def refresh_photo_url(self, photo):
+    def refresh_photo_url(self, photo, zone_id=None):
         """Re-fetch a photo's master record to get fresh download URLs.
 
+        Retries with exponential backoff for transient/server errors.
         Returns a new URL or None if the lookup fails.
         """
-        try:
-            data = self._lookup_records([photo.id])
-            for record in data.get("records", []):
-                if record.get("recordName") == photo.id:
+        for attempt in range(3):
+            try:
+                data = self._lookup_records([photo.id], zone_id=zone_id)
+                found = False
+                server_error = False
+                for record in data.get("records", []):
+                    if record.get("recordName") != photo.id:
+                        continue
+                    found = True
+                    if record.get("serverErrorCode"):
+                        server_error = True
+                        LOGGER.warning("Refresh got serverError %s for %s",
+                                       record["serverErrorCode"], photo.id)
+                        break
                     orig = record.get("fields", {}).get(
                         "resOriginalRes", {}).get("value", {})
                     url = orig.get("downloadURL")
                     if url:
                         photo._master = record
                         return PhotoAsset._fix_url(url)
-        except Exception:
-            LOGGER.exception("Failed to refresh URL for %s", photo.id)
+                if found and not server_error:
+                    return None
+            except Exception:
+                LOGGER.debug("Refresh attempt %d failed for %s",
+                             attempt + 1, photo.id)
+            if attempt < 2:
+                time.sleep(1 + attempt * 2)
+        LOGGER.error("Failed to refresh URL for %s after %d attempts",
+                     photo.id, 3)
         return None
+
+    def batch_refresh_photo_urls(self, photos, zone_id=None):
+        """Re-fetch master records for multiple photos to get fresh URLs.
+
+        Returns dict of photo.id -> fresh_url for successfully refreshed
+        photos. Raises on session/auth errors so the caller can re-auth.
+        """
+        if not photos:
+            return {}
+        record_names = [p.id for p in photos]
+        data = self._lookup_records(record_names, zone_id=zone_id)
+        photo_map = {p.id: p for p in photos}
+        result = {}
+        for record in data.get("records", []):
+            rn = record.get("recordName", "")
+            if rn not in photo_map or record.get("serverErrorCode"):
+                continue
+            orig = record.get("fields", {}).get(
+                "resOriginalRes", {}).get("value", {})
+            url = orig.get("downloadURL")
+            if url:
+                photo_map[rn]._master = record
+                result[rn] = PhotoAsset._fix_url(url)
+        return result
 
     def _batch_query(self, payload):
         """Execute a CloudKit batch query."""
@@ -661,31 +707,7 @@ class PhotosService:
         zone_id = self._detect_shared_library_zone()
         if not zone_id:
             return None
-        try:
-            url = "%s/records/lookup" % self._service_endpoint
-            payload = {
-                "records": [
-                    {"recordName": photo.id, "zoneID": zone_id}
-                ],
-            }
-            response = self.session.post(
-                url,
-                params=self.params,
-                data=json.dumps(payload),
-                headers={"Content-Type": "text/plain"},
-            )
-            data = response.json()
-            for record in data.get("records", []):
-                if record.get("recordName") == photo.id:
-                    orig = record.get("fields", {}).get(
-                        "resOriginalRes", {}).get("value", {})
-                    url = orig.get("downloadURL")
-                    if url:
-                        photo._master = record
-                        return PhotoAsset._fix_url(url)
-        except Exception:
-            LOGGER.exception("Failed to refresh shared library URL for %s", photo.id)
-        return None
+        return self.refresh_photo_url(photo, zone_id=zone_id)
 
     # ── Shared Albums ──────────────────────────────────────────────
 

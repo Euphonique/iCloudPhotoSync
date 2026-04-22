@@ -145,7 +145,7 @@ def can_convert():
     return _BACKEND is not None or _PILLOW_OK
 
 
-def convert_to_jpg(heic_path, jpg_path=None, quality=92):
+def convert_to_jpg(heic_path, jpg_path=None, quality=85):
     """Convert HEIC to JPG. Returns output path on success, None on failure."""
     if not can_convert():
         return None

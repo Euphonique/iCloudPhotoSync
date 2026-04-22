@@ -2392,7 +2392,15 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
                       ]}),
                       displayField: "label", valueField: "val",
                       mode: "local", triggerAction: "all", editable: false,
-                      value: "original", anchor: "100%" },
+                      value: "original", anchor: "100%",
+                      listeners: {
+                          select: function (combo, record) {
+                              var slider = combo.ownerCt.find("name", "jpg_quality")[0];
+                              if (slider) slider.setVisible(record.get("val") !== "original");
+                          }
+                      } },
+                    { xtype: "syno_numberfield", fieldLabel: SYNO.SDS.iCloudPhotoSync._T("settings:label_jpg_quality"), name: "jpg_quality",
+                      minValue: 10, maxValue: 100, value: 85, width: 80, hidden: true },
                     { xtype: "syno_checkbox", fieldLabel: " ", labelSeparator: "", name: "format_folders",
                       boxLabel: SYNO.SDS.iCloudPhotoSync._T("settings:checkbox_format_folders") }
                 ]}
@@ -2550,6 +2558,10 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
             if (f("filenames")) f("filenames").setValue(data.filenames || "original");
             if (f("conflict")) f("conflict").setValue(data.conflict || "skip");
             if (f("formats")) f("formats").setValue(data.formats || "original");
+            if (f("jpg_quality")) {
+                f("jpg_quality").setValue(data.jpg_quality || 85);
+                f("jpg_quality").setVisible((data.formats || "original") !== "original");
+            }
             if (f("format_folders")) f("format_folders").setValue(!!data.format_folders);
             if (f("parallel_downloads")) f("parallel_downloads").setValue(data.parallel_downloads || 4);
         });
@@ -2582,6 +2594,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
             filenames: f("filenames") ? f("filenames").getValue() : "original",
             conflict: f("conflict") ? f("conflict").getValue() : "skip",
             formats: f("formats") ? f("formats").getValue() : "original",
+            jpg_quality: f("jpg_quality") ? parseInt(f("jpg_quality").getValue(), 10) : 85,
             format_folders: f("format_folders") ? f("format_folders").getValue() : false,
             parallel_downloads: parseInt(f("parallel_downloads") ? f("parallel_downloads").getValue() : 4, 10) || 4
         };
