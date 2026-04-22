@@ -115,7 +115,7 @@ is_running() {
 grant_share_access() {
     # Grant the package user RW access to all configured target shares.
     # Extracts the top-level share name from each account's target_dir
-    # and calls synoshare. Runs as root (via conf/privilege ctrl-script).
+    # and calls synoshare via sudo (sudoers entry created by postinst).
     PKG_USER="iCloudPhotoSync"
     SYNOSHARE="/usr/syno/sbin/synoshare"
     [ -x "$SYNOSHARE" ] || return 0
@@ -133,7 +133,7 @@ except: pass
         # Extract top-level share name: /volume1/photo/sub -> photo
         SHARE=$(echo "$TDIR" | sed -n 's|^/volume[0-9]*/\([^/]*\).*|\1|p')
         [ -z "$SHARE" ] && continue
-        $SYNOSHARE --setuser "$SHARE" RW + "$PKG_USER" >> "$LOG_FILE" 2>&1 || true
+        sudo $SYNOSHARE --setuser "$SHARE" RW + "$PKG_USER" >> "$LOG_FILE" 2>&1 || true
     done
 }
 
