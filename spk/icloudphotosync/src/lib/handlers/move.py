@@ -43,7 +43,7 @@ def _runner_alive(account_id):
                 return True
         return False
     except Exception:
-        return True
+        return False
 
 
 def _start(params):

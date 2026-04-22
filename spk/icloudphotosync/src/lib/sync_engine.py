@@ -300,7 +300,23 @@ def _resolve_target_dir(path, account_id=None):
             return os.path.join(config_manager.DEFAULT_VOLUME, "homes", dsm_user, sub)
         return "__UNRESOLVED_HOME__:" + path
 
-    # Other shared folders: prepend default volume
+    # Other shared folders: look up which volume the share lives on
+    parts = path.strip("/").split("/", 1)
+    share_name = parts[0]
+    sub_path = parts[1] if len(parts) > 1 else ""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["/usr/syno/sbin/synoshare", "--get", share_name],
+            capture_output=True, text=True, timeout=5
+        )
+        for line in result.stdout.splitlines():
+            if line.strip().startswith("Path"):
+                real_share = line.split("[", 1)[-1].rstrip("]").strip()
+                if real_share:
+                    return os.path.join(real_share, sub_path) if sub_path else real_share
+    except Exception:
+        pass
     return config_manager.DEFAULT_VOLUME + path
 
 
@@ -557,16 +573,15 @@ def _run_sync_locked(account_id):
         progress.status = "error"
         progress.error = (
             "Target directory %r is not writable by the package user "
-            "'iCloudPhotoSync'. To fix this:\n"
+            "'iCloudPhotoSync'. Re-select the folder in Settings — "
+            "permissions are granted automatically.\n\n"
+            "If the problem persists:\n"
             "1. Open Control Panel → Shared Folder\n"
             "2. Select the target share → Edit → Permissions tab\n"
-            "3. IMPORTANT: Change the dropdown from 'Local Users' to "
+            "3. Change the dropdown from 'Local Users' to "
             "'System internal user'\n"
             "4. Check 'Read/Write' for the 'iCloudPhotoSync' user\n"
-            "5. Click Save\n\n"
-            "The package user is a system internal user and will NOT "
-            "appear in the 'Local Users' list. You must switch the "
-            "dropdown first."
+            "5. Click Save"
         ) % target_dir
         progress.save()
         return progress

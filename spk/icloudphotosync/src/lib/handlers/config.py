@@ -69,10 +69,16 @@ def _validate_path(params):
     if not path:
         return {"success": False, "error": {"code": 301, "message": "path required"}}
 
+    resolved = _resolve_share_path(path)
+    resolved = _resolve_home_path(resolved)
+
     from sync_engine import _writable, _get_mount_info
 
-    writable = _writable(path)
-    mp, fstype, opts = _get_mount_info(path)
+    writable = _writable(resolved)
+    if not writable:
+        _grant_share_access(resolved)
+        writable = _writable(resolved)
+    mp, fstype, opts = _get_mount_info(resolved)
 
     result = {
         "writable": writable,
@@ -149,6 +155,8 @@ def _resolve_share_path(path):
 
     parts = path.strip("/").split("/", 1)
     share_name = parts[0]
+    if not share_name or "/" in share_name or ".." in share_name:
+        return path
     sub_path = parts[1] if len(parts) > 1 else ""
 
     try:
@@ -187,6 +195,31 @@ def _resolve_home_path(path, dsm_user=""):
     if dsm_user:
         return os.path.join(config_manager.DEFAULT_VOLUME, "homes", dsm_user, sub)
     return path
+
+
+def _grant_share_access(target_dir):
+    """Grant the package user RW access to the shared folder containing target_dir.
+
+    Extracts the top-level share name from the path and calls synoshare.
+    Best-effort — failures are logged but don't block config saves.
+    """
+    if not target_dir or not target_dir.startswith("/volume"):
+        return
+    import re
+    m = re.match(r"^/volume\d+/([^/]+)", target_dir)
+    if not m:
+        return
+    share_name = m.group(1)
+    try:
+        import subprocess
+        import logging
+        subprocess.run(
+            ["sudo", "/usr/syno/sbin/synoshare", "--setuser", share_name, "RW", "+", "iCloudPhotoSync"],
+            capture_output=True, text=True, timeout=10
+        )
+        logging.getLogger(__name__).info("Granted RW access to share '%s'", share_name)
+    except Exception:
+        pass
 
 
 def _set_config(params):
@@ -259,6 +292,10 @@ def _set_config(params):
         else:
             current[k] = v
     config_manager.save_sync_config(account_id, current)
+
+    if "target_dir" in updates:
+        _grant_share_access(updates["target_dir"])
+
     return {"success": True, "data": current}
 
 

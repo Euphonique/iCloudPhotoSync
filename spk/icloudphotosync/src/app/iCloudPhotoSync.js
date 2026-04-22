@@ -506,6 +506,10 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.DetailPanel", {
             appWin: config.appWin
         });
 
+        this.aboutTab = new SYNO.SDS.iCloudPhotoSync.AboutTab({
+            appWin: config.appWin
+        });
+
         var self = this;
 
         var cfg = Ext.apply({
@@ -517,7 +521,8 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.DetailPanel", {
                 this.overviewTab,
                 this.albumTab,
                 this.settingsTab,
-                this.logTab
+                this.logTab,
+                this.aboutTab
             ],
             listeners: {
                 tabchange: function (panel, tab) {
@@ -2818,6 +2823,57 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.LogViewer", {
         this.on("activate", function () {
             if (self.logStore.getCount() === 0) {
                 self.logStore.load({ params: { start: 0, limit: pageSize } });
+            }
+        });
+    }
+});
+
+// --- About Tab ---
+Ext.define("SYNO.SDS.iCloudPhotoSync.AboutTab", {
+    extend: "Ext.Panel",
+
+    constructor: function (config) {
+        var self = this;
+
+        var cfg = Ext.apply({
+            title: SYNO.SDS.iCloudPhotoSync._T("tab:about"),
+            autoScroll: true,
+            bodyStyle: "background: #f7f8fa;",
+            html: '<div style="display:flex;align-items:center;justify-content:center;height:100%;min-height:340px;">' +
+                  '<div style="text-align:center;">' +
+                  '<img src="/webman/3rdparty/iCloudPhotoSync/images/icon_64.png" style="width:64px;height:64px;margin-bottom:16px;" />' +
+                  '<div style="font-size:18px;font-weight:700;color:#333;margin-bottom:4px;">iCloud Photo Sync</div>' +
+                  '<div class="ics-about-version" style="font-size:13px;color:#888;margin-bottom:24px;"></div>' +
+                  '<div style="margin-bottom:24px;"><a href="https://github.com/Euphonique/iCloudPhotoSync" target="_blank" ' +
+                  'style="color:#057feb;text-decoration:none;font-size:13px;">github.com/Euphonique/iCloudPhotoSync</a></div>' +
+                  '<div style="font-size:13px;color:#888;">Made with ❤ by Pascal Pagel</div>' +
+                  '<div><a href="https://www.pascalpagel.de" target="_blank" ' +
+                  'style="color:#057feb;text-decoration:none;font-size:13px;">www.pascalpagel.de</a></div>' +
+                  '</div></div>'
+        }, config);
+
+        delete cfg.appWin;
+        this.appWin = config.appWin;
+        this.callParent([cfg]);
+
+        this.on("activate", function () {
+            self._loadVersion();
+        });
+    },
+
+    _loadVersion: function () {
+        var el = this.body && this.body.dom && this.body.dom.querySelector(".ics-about-version");
+        if (!el || el.innerHTML) return;
+        Ext.Ajax.request({
+            url: "/webman/3rdparty/iCloudPhotoSync/api.cgi",
+            params: { method: "status", action: "get" },
+            success: function (resp) {
+                try {
+                    var d = Ext.decode(resp.responseText);
+                    if (d && d.success && d.data && d.data.version) {
+                        el.innerHTML = "v" + Ext.util.Format.htmlEncode(d.data.version);
+                    }
+                } catch (e) {}
             }
         });
     }

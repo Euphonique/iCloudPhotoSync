@@ -3,7 +3,7 @@
 set -euo pipefail
 
 PKG_NAME="iCloudPhotoSync"
-PKG_VER="1.3.3"
+PKG_VER="1.4.0"
 PKG_REV="1"
 DISPLAY_NAME="iCloud Photo Sync"
 DESCRIPTION="Automatically mirrors your iCloud photo library to a Synology NAS."
@@ -112,6 +112,31 @@ is_running() {
     kill -0 "$PID" 2>/dev/null
 }
 
+grant_share_access() {
+    # Grant the package user RW access to all configured target shares.
+    # Extracts the top-level share name from each account's target_dir
+    # and calls synoshare. Runs as root (via conf/privilege ctrl-script).
+    PKG_USER="iCloudPhotoSync"
+    SYNOSHARE="/usr/syno/sbin/synoshare"
+    [ -x "$SYNOSHARE" ] || return 0
+    for cfg in "$VAR_DIR"/accounts/*/sync_config.json; do
+        [ -f "$cfg" ] || continue
+        # Extract target_dir value — lightweight JSON parse via Python
+        TDIR=$("$PYTHON" -c "
+import json, sys
+try:
+    d = json.load(open('$cfg'))
+    print(d.get('target_dir', ''))
+except: pass
+" 2>/dev/null)
+        [ -z "$TDIR" ] && continue
+        # Extract top-level share name: /volume1/photo/sub -> photo
+        SHARE=$(echo "$TDIR" | sed -n 's|^/volume[0-9]*/\([^/]*\).*|\1|p')
+        [ -z "$SHARE" ] && continue
+        $SYNOSHARE --setuser "$SHARE" RW + "$PKG_USER" >> "$LOG_FILE" 2>&1 || true
+    done
+}
+
 case $1 in
     start)
         if is_running; then exit 0; fi
@@ -122,6 +147,7 @@ case $1 in
         fi
         [ -f "$SCHEDULER" ] || { echo "Scheduler missing: $SCHEDULER" >> "$STARTUP_ERR"; exit 1; }
         "$PYTHON" -c "import sys; sys.exit(0)" 2>/dev/null || { echo "Python sanity check failed" >> "$STARTUP_ERR"; exit 1; }
+        grant_share_access
         SYNOPKG_PKGVAR="$VAR_DIR" ICLOUD_STARTUP_ERR="$STARTUP_ERR" \
             nohup "$PYTHON" "$SCHEDULER" >> "$LOG_FILE" 2>&1 &
         echo $! > "$PID_FILE"
@@ -201,8 +227,10 @@ PKG_VAR="${SYNOPKG_PKGVAR:-/var/packages/iCloudPhotoSync/var}"
 mkdir -p "$PKG_VAR/accounts" "$PKG_VAR/logs"
 [ -f "$PKG_VAR/config.json" ] || \
     echo '{"accounts": [], "default_target_dir": "/volume1/iCloudPhotos"}' > "$PKG_VAR/config.json"
+# Allow CGI to grant share access without package restart
+echo "iCloudPhotoSync ALL=(root) NOPASSWD: /usr/syno/sbin/synoshare" > /etc/sudoers.d/iCloudPhotoSync
+chmod 440 /etc/sudoers.d/iCloudPhotoSync
 # Clean legacy artifacts
-rm -f /etc/sudoers.d/iCloudPhotoSync 2>/dev/null || true
 rm -f /etc/cron.d/iCloudPhotoSync 2>/dev/null || true
 exit 0
 EOF
@@ -237,7 +265,9 @@ EOF
 # postupgrade
 cat > "$BUILD_DIR/scripts/postupgrade" <<'EOF'
 #!/bin/sh
-rm -f /etc/sudoers.d/iCloudPhotoSync 2>/dev/null || true
+# Ensure sudoers entry exists (may be missing from older versions)
+echo "iCloudPhotoSync ALL=(root) NOPASSWD: /usr/syno/sbin/synoshare" > /etc/sudoers.d/iCloudPhotoSync
+chmod 440 /etc/sudoers.d/iCloudPhotoSync
 rm -f /etc/cron.d/iCloudPhotoSync 2>/dev/null || true
 exit 0
 EOF

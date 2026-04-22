@@ -26,6 +26,7 @@ overview	=	"Overview"
 albums	=	"Albums"
 settings	=	"Settings"
 log	=	"Log"
+about	=	"About"
 
 [account]
 empty_list	=	"No account<br/>configured"
@@ -168,7 +169,7 @@ dialog_change_target_dir	=	"Change target folder"
 error_move_not_started	=	"Move could not be started."
 error_save_failed	=	"Settings could not be saved."
 path_not_writable_title	=	"Target folder not writable"
-path_not_writable_acl	=	"The folder \"{0}\" is not writable by the package.<br><br>To fix this:<br>1. Open <b>Control Panel → Shared Folder</b><br>2. Select the target share → <b>Edit → Permissions</b><br>3. Change the dropdown from \"Local Users\" to <b>\"System internal user\"</b><br>4. Check <b>Read/Write</b> for \"iCloudPhotoSync\"<br>5. Click Save"
+path_not_writable_acl	=	"The folder \"{0}\" is not writable by the package.<br><br><b>Fix:</b> Re-select the folder — permissions are granted automatically.<br><br>If the problem persists:<br>1. Open <b>Control Panel → Shared Folder</b><br>2. Select the target share → <b>Edit → Permissions</b><br>3. Change the dropdown from \"Local Users\" to <b>\"System internal user\"</b><br>4. Check <b>Read/Write</b> for \"iCloudPhotoSync\"<br>5. Click Save"
 path_not_writable_no_acl	=	"The folder \"{0}\" is on a drive formatted as <b>{1}</b>.<br><br>This filesystem does not support user-level permissions. The package cannot be granted write access.<br><br><b>Solutions:</b><br>• Use a shared folder on an internal volume (ext4/Btrfs)<br>• Reformat the external drive as ext4 (data will be erased)"
 
 [log]

@@ -6,6 +6,21 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 import config_manager
 
 
+def _read_pkg_version():
+    info_path = "/var/packages/iCloudPhotoSync/INFO"
+    try:
+        with open(info_path, "r") as f:
+            for line in f:
+                if line.startswith("version="):
+                    return line.split("=", 1)[1].strip().strip('"')
+    except (OSError, IOError):
+        pass
+    return "unknown"
+
+
+_PKG_VERSION = _read_pkg_version()
+
+
 def handle(params):
     action = params.getvalue("action", "get")
 
@@ -18,7 +33,7 @@ def handle(params):
                 "sync_status": "idle",
                 "accounts": len(accounts),
                 "next_sync": None,
-                "version": "1.0.0",
+                "version": _PKG_VERSION,
                 "timestamp": int(time.time()),
             },
         }

@@ -26,6 +26,7 @@ overview	=	"Überblick"
 albums	=	"Alben"
 settings	=	"Einstellungen"
 log	=	"Protokoll"
+about	=	"Info"
 
 [account]
 empty_list	=	"Kein Account<br/>vorhanden"
@@ -168,7 +169,7 @@ dialog_change_target_dir	=	"Zielordner ändern"
 error_move_not_started	=	"Verschiebung konnte nicht gestartet werden."
 error_save_failed	=	"Einstellungen konnten nicht gespeichert werden."
 path_not_writable_title	=	"Zielordner nicht beschreibbar"
-path_not_writable_acl	=	"Der Ordner \"{0}\" ist für das Paket nicht beschreibbar.<br><br>So beheben:<br>1. Öffne <b>Systemsteuerung → Gemeinsamer Ordner</b><br>2. Zielfreigabe wählen → <b>Bearbeiten → Berechtigungen</b><br>3. Dropdown von „Lokale Benutzer" auf <b>„Systeminterne Benutzer"</b> umschalten<br>4. <b>Lesen/Schreiben</b> für „iCloudPhotoSync" aktivieren<br>5. Speichern"
+path_not_writable_acl	=	"Der Ordner \"{0}\" ist für das Paket nicht beschreibbar.<br><br><b>Lösung:</b> Den Ordner erneut auswählen — Berechtigungen werden automatisch gesetzt.<br><br>Falls das Problem bestehen bleibt:<br>1. Öffne <b>Systemsteuerung → Gemeinsamer Ordner</b><br>2. Zielfreigabe wählen → <b>Bearbeiten → Berechtigungen</b><br>3. Dropdown von „Lokale Benutzer" auf <b>„Systeminterne Benutzer"</b> umschalten<br>4. <b>Lesen/Schreiben</b> für „iCloudPhotoSync" aktivieren<br>5. Speichern"
 path_not_writable_no_acl	=	"Der Ordner \"{0}\" liegt auf einem Laufwerk mit Dateisystem <b>{1}</b>.<br><br>Dieses Dateisystem unterstützt keine benutzerspezifischen Berechtigungen. Dem Paket kann kein Schreibzugriff gewährt werden.<br><br><b>Lösungen:</b><br>• Einen gemeinsamen Ordner auf einem internen Volume verwenden (ext4/Btrfs)<br>• Das externe Laufwerk als ext4 neu formatieren (Daten werden gelöscht)"
 
 [log]
