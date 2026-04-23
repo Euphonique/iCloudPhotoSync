@@ -36,7 +36,7 @@ def _album_sort_key(a):
 
 def _maybe_adp_error(exc, fallback_code):
     """Return an ADP-specific error response when appropriate."""
-    from vendor.pyicloud_ipd.exceptions import (
+    from pyicloud_ipd.exceptions import (
         PyiCloudADPProtectionException,
         PyiCloudServiceNotActivatedException,
     )
@@ -44,9 +44,8 @@ def _maybe_adp_error(exc, fallback_code):
         return {"success": False, "error": {"code": ADP_ERROR_CODE, "message": str(exc)}}
     if isinstance(exc, PyiCloudServiceNotActivatedException):
         return {"success": False, "error": {"code": ADP_ERROR_CODE, "message":
-            "iCloud Photos service is not available for this account. "
-            "This is often caused by iCloud Advanced Data Protection (ADP). "
-            "Disable ADP or enable temporary web access at icloud.com."}}
+            "iCloud Photos is not available for this account. "
+            "Make sure iCloud Photos is enabled in the Apple ID settings."}}
     return {"success": False, "error": {"code": fallback_code, "message": str(exc)}}
 
 

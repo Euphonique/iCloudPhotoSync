@@ -202,13 +202,16 @@ class ICloudClient:
                 apple_id=self.apple_id,
                 cookie_directory=self.session_dir,
             )
+            if not self.api.data.get("dsInfo"):
+                logger.warning("Session restore returned no account data for %s", self.apple_id)
+                return False
             return not (self.api.requires_2fa or self.api.requires_2sa)
         except Exception:
             return False
 
     def is_authenticated(self):
         """Check if the current session is valid."""
-        if not self.api:
+        if not self.api or not self.api.data.get("dsInfo"):
             return False
         try:
             return not (self.api.requires_2fa or self.api.requires_2sa)

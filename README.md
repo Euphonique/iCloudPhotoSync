@@ -33,7 +33,7 @@ No spksrc checkout required — just run the included build script:
 ./build.sh
 ```
 
-The resulting `.spk` file is created in the project root (e.g. `iCloudPhotoSync-1.4.1.spk`).
+The resulting `.spk` file is created in the project root (e.g. `iCloudPhotoSync-1.4.2.spk`).
 
 ### Building with spksrc
 

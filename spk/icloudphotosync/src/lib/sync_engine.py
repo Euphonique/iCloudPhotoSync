@@ -602,16 +602,25 @@ def _run_sync_locked(account_id):
     try:
         photos_svc = client.api.photos
     except Exception as e:
-        from vendor.pyicloud_ipd.exceptions import (
+        from pyicloud_ipd.exceptions import (
             PyiCloudADPProtectionException,
             PyiCloudServiceNotActivatedException,
         )
-        if isinstance(e, (PyiCloudADPProtectionException, PyiCloudServiceNotActivatedException)):
+        if isinstance(e, PyiCloudADPProtectionException):
             LOGGER.error(
                 "iCloud Advanced Data Protection (ADP) appears to be enabled "
                 "for account %s. ADP encrypts iCloud Photos end-to-end, "
                 "blocking web-API access. Disable ADP or enable temporary "
                 "web access at icloud.com.", account_id)
+            progress.status = "error"
+            progress.error = str(e)
+            progress.save()
+            return progress
+        if isinstance(e, PyiCloudServiceNotActivatedException):
+            LOGGER.error(
+                "iCloud Photos is not available for account %s. "
+                "Make sure iCloud Photos is enabled in the Apple ID "
+                "settings for this account.", account_id)
             progress.status = "error"
             progress.error = str(e)
             progress.save()
@@ -627,7 +636,7 @@ def _run_sync_locked(account_id):
                 ps_album = photos_svc.albums.get("All Photos")
                 ps_count = ps_album.photo_count if ps_album else 0
             except Exception as e:
-                from vendor.pyicloud_ipd.exceptions import PyiCloudADPProtectionException
+                from pyicloud_ipd.exceptions import PyiCloudADPProtectionException
                 if isinstance(e, PyiCloudADPProtectionException):
                     LOGGER.error(
                         "ADP blocks access to iCloud Photos for account %s: %s",
