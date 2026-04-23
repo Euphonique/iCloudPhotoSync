@@ -7,7 +7,7 @@ Built with the [SynoCommunity/spksrc](https://github.com/SynoCommunity/spksrc) c
 
 ## Features
 
-- **iCloud Photostream & Albums** — incremental sync with deduplication via hardlinks
+- **iCloud Photostream, Albums & Shared Albums** — incremental sync with deduplication via hardlinks
 - **Multi-account** — several Apple IDs side by side, each with its own settings
 - **Parallel downloads** — 1/2/4/8 configurable per account
 - **Folder structure** — year / year-month / year-month-day / flat
@@ -15,39 +15,41 @@ Built with the [SynoCommunity/spksrc](https://github.com/SynoCommunity/spksrc) c
 - **Apple 2FA** via trusted-device push or SMS fallback
 - **Native DSM UI** — built with SYNO.ux components
 - **Multi-language** — English and German
-- **Unprivileged** — runs as `sc-icloudphotosync`, not root
+- **Unprivileged** — runs as `iCloudPhotoSync`, not root
 
 ## Building
 
-### Prerequisites
+### Standalone build (recommended)
 
-1. Clone the [spksrc](https://github.com/SynoCommunity/spksrc) repository
-2. Set up the build environment (Docker recommended):
+No spksrc checkout required — just run the included build script:
+
+```bash
+./build.sh
+```
+
+The resulting `.spk` file is created in the project root (e.g. `iCloudPhotoSync-1.4.1.spk`).
+
+### Building with spksrc
+
+Alternatively, build via the full [spksrc](https://github.com/SynoCommunity/spksrc) cross-compilation framework:
+
+1. Clone spksrc and set up the build environment (Docker recommended):
    ```bash
    git clone https://github.com/SynoCommunity/spksrc.git
    cd spksrc
    docker build -t spksrc .
    ```
 
-### Adding this package
+2. Copy or symlink the package directory into your spksrc checkout:
+   ```bash
+   cp -r /path/to/iCloudPhotoSync-spksrc/spk/icloudphotosync spk/
+   ```
 
-Copy or symlink the package directory into your spksrc checkout:
-
-```bash
-# From the spksrc root
-cp -r /path/to/iCloudPhotoSync-spksrc/spk/icloudphotosync spk/
-```
-
-### Build
-
-```bash
-# Build for a specific architecture
-cd spk/icloudphotosync
-make arch-x64-7.2
-
-# Or build for all supported architectures
-make all-supported
-```
+3. Build:
+   ```bash
+   cd spk/icloudphotosync
+   make arch-x64-7.2
+   ```
 
 The resulting `.spk` files land in `packages/`.
 
@@ -99,7 +101,7 @@ If you have ADP enabled, this app cannot access your iCloud Photos. ADP encrypts
 
 ## Privacy & security
 
-- Apple password is never stored permanently — it is only held temporarily during the 2FA handshake, encrypted with a machine-specific key (SHA-256), and kept in RAM only (/dev/shm). It is discarded immediately after authentication completes.
+- Apple password is **never stored permanently** — it is only held temporarily during the 2FA handshake, encrypted with a machine-specific key (SHA-256), and kept in RAM only (`/dev/shm`). It is discarded immediately after authentication completes.
 - Session cookies stored under `/var/packages/icloudphotosync/var/accounts/{id}/session/`
 - No telemetry, no analytics, no phone-home
 
