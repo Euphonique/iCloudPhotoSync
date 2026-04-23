@@ -10,7 +10,6 @@ import os
 import sys
 import cgi
 import urllib.parse
-import urllib.request
 
 # The app/ dir lives at /var/packages/iCloudPhotoSync/target/app/
 # The lib/ dir lives at /var/packages/iCloudPhotoSync/target/lib/
@@ -57,6 +56,19 @@ def respond(success, data=None, error=None, total=None):
     print(body)
 
 
+def _is_icloud_url(url):
+    """Validate that url points to an Apple iCloud content domain."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = (parsed.hostname or "").lower()
+        return (
+            parsed.scheme in ("http", "https")
+            and (host.endswith(".icloud-content.com") or host == "icloud-content.com")
+        )
+    except Exception:
+        return False
+
+
 def proxy_thumb():
     """Proxy iCloud thumbnail to avoid mixed-content browser block."""
     params = cgi.FieldStorage()
@@ -82,19 +94,6 @@ def proxy_thumb():
         print("Content-Type: text/plain")
         print()
         print("Fetch failed")
-
-
-def _is_icloud_url(url):
-    """Validate that url points to an Apple iCloud content domain."""
-    try:
-        parsed = urllib.parse.urlparse(url)
-        host = (parsed.hostname or "").lower()
-        return (
-            parsed.scheme in ("http", "https")
-            and (host.endswith(".icloud-content.com") or host == "icloud-content.com")
-        )
-    except Exception:
-        return False
 
 
 def _safe_filename(name, fallback="photo.jpg"):
@@ -393,97 +392,10 @@ def _method_from_query():
     return vals[0] if vals else ""
 
 
-def _verify_dsm_session():
-    """Verify the caller has a valid DSM session.
-
-    Returns the DSM username on success, empty string on failure.
-    DSM sets HTTP_COOKIE with a session id (id=, smid=, did=) that we
-    validate against the Synology Auth API.
-    """
-    user = os.environ.get("REMOTE_USER", "") or os.environ.get("HTTP_X_SYNO_USER", "")
-    if user:
-        return user
-
-    cookie_str = os.environ.get("HTTP_COOKIE", "")
-    sid = ""
-    for cookie_name in ("id", "smid", "did"):
-        for part in cookie_str.split(";"):
-            part = part.strip()
-            if part.startswith(cookie_name + "="):
-                sid = part[len(cookie_name) + 1:]
-                break
-        if sid:
-            break
-
-    if not sid:
-        return ""
-
-    remote_ip = os.environ.get("REMOTE_ADDR", "")
-    apis = [
-        "http://localhost:5000/webapi/entry.cgi?api=SYNO.Core.CurrentConnection&version=1&method=list&_sid=%s",
-        "http://localhost:5001/webapi/entry.cgi?api=SYNO.Core.CurrentConnection&version=1&method=list&_sid=%s",
-    ]
-    for url_tpl in apis:
-        try:
-            import ssl
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            resp = urllib.request.urlopen(url_tpl % sid, timeout=5, context=ctx)
-            result = json.loads(resp.read().decode("utf-8"))
-            if result.get("success") and result.get("data"):
-                items = result["data"].get("items", [])
-                for item in items:
-                    if item.get("from") == remote_ip:
-                        return item.get("who", "")
-                if items:
-                    return items[0].get("who", "")
-        except Exception:
-            continue
-
-    return ""
-
-
-def _check_csrf():
-    """Validate CSRF protection via SynoToken.
-
-    DSM apps send SynoToken as a query parameter or HTTP header. We check
-    both. Returns True if the token is present and non-empty (DSM session
-    auth already validates it belongs to the session).
-    """
-    qs = os.environ.get("QUERY_STRING", "")
-    parsed = urllib.parse.parse_qs(qs)
-    token = ""
-    for key in parsed:
-        if key.lower() == "synotoken":
-            token = parsed[key][0]
-            break
-    if not token:
-        token = os.environ.get("HTTP_X_SYNO_TOKEN", "")
-    return bool(token)
-
-
-READONLY_METHODS = frozenset({"status", "thumb", "download", "download_zip", "log_export"})
-
-
 def main():
     # Read the method from QUERY_STRING first so POST bodies (download_zip)
     # aren't accidentally consumed by cgi.FieldStorage before the handler runs.
     method = _method_from_query()
-
-    # --- DSM session authentication gate ---
-    dsm_user = _verify_dsm_session()
-    if not dsm_user:
-        print("Status: 403 Forbidden")
-        print("Content-Type: application/json")
-        print()
-        print(json.dumps({"success": False, "error": {"code": 403, "message": "DSM authentication required"}}))
-        return
-
-    # --- CSRF protection for state-changing methods ---
-    if method not in READONLY_METHODS and not _check_csrf():
-        respond(False, error={"code": 403, "message": "Missing or invalid SynoToken (CSRF protection)"})
-        return
 
     if method == "thumb":
         proxy_thumb()
@@ -510,11 +422,6 @@ def main():
 
     if not handler:
         respond(False, error={"code": 100, "message": "Unknown method: %s" % method})
-        return
-
-    # CSRF check for methods resolved from POST body
-    if method not in READONLY_METHODS and not _check_csrf():
-        respond(False, error={"code": 403, "message": "Missing or invalid SynoToken (CSRF protection)"})
         return
 
     try:

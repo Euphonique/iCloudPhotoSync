@@ -24,6 +24,49 @@ import heic_converter
 LOGGER = logging.getLogger("sync_engine")
 
 
+def _sanitize_path_component(name):
+    """Remove path traversal and dangerous characters from a single path component."""
+    if not name:
+        return "unknown"
+    name = name.replace("/", "_").replace("\\", "_")
+    name = name.replace("\x00", "").replace("\r", "").replace("\n", "")
+    while ".." in name:
+        name = name.replace("..", "")
+    name = name.strip(". ")
+    return name or "unknown"
+
+
+def _safe_join(base, *parts):
+    """Join paths and verify the result stays inside base."""
+    result = os.path.join(base, *parts)
+    result = os.path.realpath(result)
+    base = os.path.realpath(base)
+    if not result.startswith(base + os.sep) and result != base:
+        raise ValueError("Path traversal detected: %s escapes %s" % (result, base))
+    return result
+
+
+def _makedirs_safe(path, mode=0o755):
+    """Create directories without following symlinks in intermediate components."""
+    parts = []
+    head = path
+    while True:
+        head, tail = os.path.split(head)
+        if not tail:
+            break
+        parts.append(tail)
+        if os.path.isdir(head):
+            break
+    parts.reverse()
+    current = head
+    for part in parts:
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            os.remove(current)
+        if not os.path.isdir(current):
+            os.mkdir(current, mode)
+
+
 class _UrlExpiredError(Exception):
     """Raised when an iCloud CDN URL returns 410 Gone (expired)."""
     pass
@@ -93,38 +136,11 @@ def _ts_path(timestamp_ms, fmt):
     return time.strftime(fmt, time.localtime(timestamp_ms / 1000.0))
 
 
-def _sanitize_path_component(name):
-    """Strip traversal sequences, null bytes, and control chars from a
-    path component (filename or folder name) received from iCloud."""
-    if not name:
-        return "unnamed"
-    name = name.replace("\x00", "")
-    name = name.replace("/", "_").replace("\\", "_")
-    name = name.replace("\r", "").replace("\n", "")
-    while ".." in name:
-        name = name.replace("..", ".")
-    name = name.strip(". ")
-    return name or "unnamed"
-
-
-def _safe_join(base, *parts):
-    """Join path components and verify the result stays inside base.
-
-    Raises ValueError if the resolved path escapes the base directory.
-    """
-    result = os.path.join(base, *parts)
-    result = os.path.normpath(result)
-    base = os.path.normpath(base)
-    if not result.startswith(base + os.sep) and result != base:
-        raise ValueError("Path traversal blocked: %s escapes %s" % (result, base))
-    return result
-
-
 def _build_filename(photo, config):
     """Build the filename for a photo based on config."""
     if config.get("filenames") == "date_based" and photo.created:
-        raw_ext = os.path.splitext(photo.filename)[1] or ".jpg"
-        ext = "." + _sanitize_path_component(raw_ext)
+        raw_ext = os.path.splitext(photo.filename)[1]
+        ext = ("." + _sanitize_path_component(raw_ext)) if raw_ext else ".jpg"
         return time.strftime("%Y-%m-%d_%H%M%S", time.localtime(photo.created / 1000.0)) + ext
     return _sanitize_path_component(photo.filename)
 
@@ -159,33 +175,6 @@ def _resolve_conflict(path, config, synced_this_run=None):
     return None
 
 
-def _makedirs_safe(dir_path):
-    """Create directory tree, refusing to follow symlinks.
-
-    Walks each component and checks for symlinks before creating.
-    Raises OSError if a symlink is found in the path.
-    """
-    parts = []
-    head = dir_path
-    while True:
-        head, tail = os.path.split(head)
-        if tail:
-            parts.append(tail)
-        else:
-            if head:
-                parts.append(head)
-            break
-    parts.reverse()
-
-    current = ""
-    for part in parts:
-        current = os.path.join(current, part) if current else part
-        if os.path.islink(current):
-            raise OSError("Refusing to follow symlink: %s" % current)
-        if not os.path.isdir(current):
-            os.mkdir(current, 0o755)
-
-
 def _download_file(url, dest_path, session=None):
     """Download a file from URL to dest_path.
 
@@ -195,6 +184,11 @@ def _download_file(url, dest_path, session=None):
     """
     dest_dir = os.path.dirname(dest_path)
     _makedirs_safe(dest_dir)
+    # Ensure directories are world-readable so DSM File Station can see them
+    try:
+        os.chmod(dest_dir, 0o755)
+    except OSError:
+        pass
     tmp_path = dest_path + ".part"
     # (connect, read) — a read timeout makes iter_content() give up when
     # the stream goes silent, so a rate-limited/stalled chunk can't pin
@@ -725,10 +719,7 @@ def _run_sync_locked(account_id):
             for name, count, latest in album_metas:
                 alb = photos_svc.albums.get(name)
                 if alb and alb.parent_folder:
-                    sub = os.path.join(
-                        _sanitize_path_component(alb.parent_folder),
-                        _sanitize_path_component(name),
-                    )
+                    sub = os.path.join(_sanitize_path_component(alb.parent_folder), _sanitize_path_component(name))
                 else:
                     sub = _sanitize_path_component(name)
                 plan.append((name, "albums", sub, count, latest))
@@ -907,27 +898,21 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                 date_subfolder = folder_builder(photo.created)
                 filename = _build_filename(photo, sync_config)
 
-                try:
-                    if folder_key == "shared_library":
-                        dest_dir = _safe_join(target_dir, "Shared Library", date_subfolder)
-                    elif folder_key == "shared_albums":
-                        dest_dir = _safe_join(target_dir, "Shared", subfolder, date_subfolder)
-                    elif subfolder:
-                        dest_dir = _safe_join(target_dir, "Albums", subfolder, date_subfolder)
-                    else:
-                        dest_dir = _safe_join(target_dir, "Photostream", date_subfolder)
+                if folder_key == "shared_library":
+                    dest_dir = os.path.join(target_dir, "Shared Library", date_subfolder)
+                elif folder_key == "shared_albums":
+                    dest_dir = os.path.join(target_dir, "Shared", subfolder, date_subfolder)
+                elif subfolder:
+                    dest_dir = os.path.join(target_dir, "Albums", subfolder, date_subfolder)
+                else:
+                    dest_dir = os.path.join(target_dir, "Photostream", date_subfolder)
 
-                    if sync_config.get("format_folders"):
-                        ext = os.path.splitext(filename)[1].upper().lstrip(".")
-                        fmt_folder = ext if ext in ("HEIC", "JPG", "JPEG", "PNG", "MOV", "MP4") else "Other"
-                        dest_dir = _safe_join(target_dir, os.path.relpath(dest_dir, target_dir), fmt_folder)
+                if sync_config.get("format_folders"):
+                    ext = os.path.splitext(filename)[1].upper().lstrip(".")
+                    fmt_folder = ext if ext in ("HEIC", "JPG", "JPEG", "PNG", "MOV", "MP4") else "Other"
+                    dest_dir = os.path.join(dest_dir, fmt_folder)
 
-                    dest_path = _safe_join(target_dir, os.path.relpath(dest_dir, target_dir), filename)
-                except ValueError as e:
-                    LOGGER.warning("Skipped (path traversal): %s — %s", photo.filename, e)
-                    progress.skipped_photos += 1
-                    progress.save_throttled()
-                    continue
+                dest_path = os.path.join(dest_dir, filename)
 
                 with synced_lock:
                     final_path = _resolve_conflict(dest_path, sync_config, synced_this_run)
@@ -946,9 +931,11 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                 existing = sync_manifest.find_any_synced_path(account_id, photo.id)
                 if existing and existing != final_path:
                     try:
-                        _makedirs_safe(os.path.dirname(final_path))
-                        if os.path.islink(existing):
-                            raise OSError("Refusing to hardlink symlink: %s" % existing)
+                        os.makedirs(os.path.dirname(final_path), exist_ok=True)
+                        try:
+                            os.chmod(os.path.dirname(final_path), 0o755)
+                        except OSError:
+                            pass
                         os.link(existing, final_path)
                         ok = sync_manifest.mark_synced(
                             account_id, photo.id, album_name, filename, final_path,

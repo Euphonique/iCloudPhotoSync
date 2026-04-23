@@ -3,7 +3,7 @@
 set -euo pipefail
 
 PKG_NAME="iCloudPhotoSync"
-PKG_VER="1.4.3"
+PKG_VER="1.4.4"
 PKG_REV="1"
 DISPLAY_NAME="iCloud Photo Sync"
 DESCRIPTION="Automatically mirrors your iCloud photo library to a Synology NAS."
@@ -65,6 +65,12 @@ cp "$SRC_DIR"/app/index.html "$STAGE/app/"
 cp "$SRC_DIR"/app/iCloudPhotoSync.js "$STAGE/app/"
 cp -R "$SRC_DIR/app/images" "$STAGE/app/"
 cp -R "$SRC_DIR/app/texts" "$STAGE/app/"
+
+# ── 1b. Fix line endings (Windows/CRLF → Unix/LF) ───────────────────────────
+
+echo "==> Fixing line endings..."
+find "$STAGE" \( -name "*.py" -o -name "*.cgi" -o -name "*.sh" -o -name "config" \) \
+    -exec sed -i 's/\r$//' {} +
 
 # ── 2. Create package.tgz ────────────────────────────────────────────────────
 

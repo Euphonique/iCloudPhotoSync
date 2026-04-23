@@ -196,7 +196,6 @@ def get_account_dir(account_id):
 # --- Temporary password storage for pending 2FA ---
 # Stored in /dev/shm (tmpfs / RAM-only) so the password never touches disk.
 # Falls back to the per-account directory when /dev/shm is unavailable.
-#
 # Encryption: PBKDF2-derived keystream with random salt + HMAC-SHA256
 # authentication. The key is derived from machine-id + account-id + a
 # 16-byte random salt, so every encryption produces different ciphertext
@@ -230,14 +229,12 @@ def _get_machine_id():
 
 
 def _derive_keys(account_id, salt):
-    """Derive a 64-byte key block via PBKDF2, split into encryption + HMAC keys."""
     seed = ("icloudphotosync:%s:%s" % (_get_machine_id(), account_id)).encode()
     key_block = hashlib.pbkdf2_hmac("sha256", seed, salt, _PBKDF2_ITERATIONS, dklen=64)
     return key_block[:32], key_block[32:]
 
 
 def _keystream_encrypt(data, key):
-    """XOR data with a PBKDF2-derived keystream (one block per 32 bytes)."""
     out = bytearray()
     for i in range(0, len(data), 32):
         block_key = hashlib.sha256(key + i.to_bytes(4, "big")).digest()
@@ -257,7 +254,6 @@ def save_pending_password(account_id, password):
     ciphertext = _keystream_encrypt(password.encode("utf-8"), enc_key)
     mac = hmac.new(hmac_key, salt + ciphertext, "sha256").digest()
 
-    # File format: salt (16) || hmac (32) || ciphertext (variable)
     fd = os.open(pw_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(salt)
