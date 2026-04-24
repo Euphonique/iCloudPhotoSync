@@ -13,10 +13,8 @@ DESCRIPTION    = Automatically mirrors your iCloud photo library to a Synology N
 DISPLAY_NAME   = iCloud Photo Sync
 CHANGELOG      = Security hardening: CSRF protection, DSM session auth gate, rate limiting, path traversal prevention, SSRF fix, symlink-safe file ops, encrypted 2FA password storage, restrictive file permissions.
 
-HOMEPAGE   = https://github.com/SynoCommunity/spksrc
+HOMEPAGE   = https://github.com/Euphonique/iCloudPhotoSync
 LICENSE    = MIT
-
-WIZARDS_DIR = src/wizard
 
 REQUIRED_MIN_DSM = 7.2
 SERVICE_USER     = auto
@@ -41,22 +39,19 @@ include ../../mk/spksrc.spk.mk
 .PHONY: icloudphotosync_extra_install
 icloudphotosync_extra_install:
 	@$(MSG) Installing iCloudPhotoSync application files
-	@install -d -m 755 $(STAGING_INSTALL_PREFIX)/bin
-	@install -d -m 755 $(STAGING_INSTALL_PREFIX)/lib
-	@install -d -m 755 $(STAGING_INSTALL_PREFIX)/app
+	@install -d -m 755 $(STAGING_DIR)/bin
+	@install -d -m 755 $(STAGING_DIR)/lib
+	@install -d -m 755 $(STAGING_DIR)/app
 	@# Python application scripts
-	@install -m 755 src/bin/scheduler.py $(STAGING_INSTALL_PREFIX)/bin/
-	@install -m 755 src/bin/sync_runner.py $(STAGING_INSTALL_PREFIX)/bin/
-	@install -m 755 src/bin/move_runner.py $(STAGING_INSTALL_PREFIX)/bin/
+	@install -m 755 src/bin/scheduler.py $(STAGING_DIR)/bin/
+	@install -m 755 src/bin/sync_runner.py $(STAGING_DIR)/bin/
+	@install -m 755 src/bin/move_runner.py $(STAGING_DIR)/bin/
 	@# Python library modules
-	@cp -R src/lib/*.py $(STAGING_INSTALL_PREFIX)/lib/
-	@cp -R src/lib/handlers $(STAGING_INSTALL_PREFIX)/lib/
-	@cp -R src/lib/vendor $(STAGING_INSTALL_PREFIX)/lib/
-	@# heif-convert is provided by cross/heif-convert dependency
-	@# (installed to STAGING_INSTALL_PREFIX/bin/heif-convert automatically)
-	@# Web UI (DSM app)
-	@cp -R src/app/* $(STAGING_INSTALL_PREFIX)/app/
+	@cp -R src/lib/*.py $(STAGING_DIR)/lib/
+	@cp -R src/lib/handlers $(STAGING_DIR)/lib/
+	@cp -R src/lib/vendor $(STAGING_DIR)/lib/
+	@cp -R src/app/* $(STAGING_DIR)/app/
 	@# DSM configuration
-	@install -d -m 755 $(STAGING_INSTALL_PREFIX)/conf
-	@cp src/conf/privilege $(STAGING_INSTALL_PREFIX)/conf/
-	@cp src/conf/resource $(STAGING_INSTALL_PREFIX)/conf/
+	@install -d -m 755 $(STAGING_DIR)/conf
+	@cp src/conf/privilege $(STAGING_DIR)/conf/
+	@cp src/conf/resource $(STAGING_DIR)/conf/
