@@ -437,8 +437,14 @@ def runner_alive(account_id):
     a sync_runner.py subprocess or a scheduler thread in our own process).
     This replaces a prior /proc cmdline scan which only matched
     sync_runner.py and mis-flagged scheduler-run syncs as crashed.
-    Fails open (returns True) so transient lock errors don't clobber
-    progress state.
+
+    Fails closed (returns False) when the lock file cannot be opened so
+    that a permission error or missing file never permanently blocks the
+    user from changing settings.  The caller (heal_stale_progress) will
+    then reset the stale progress, which is the safer default: a
+    false-negative here at most allows a concurrent config write during
+    the rare window of an active sync, whereas a false-positive locks
+    the user out entirely (see #32).
     """
     lock_path = os.path.join(config_manager.get_account_dir(account_id), ".sync.lock")
     if not os.path.exists(os.path.dirname(lock_path)):
@@ -456,7 +462,8 @@ def runner_alive(account_id):
             pass
         return False
     except OSError:
-        return True
+        LOGGER.warning("Cannot probe sync lock for %s — assuming no runner", account_id)
+        return False
     finally:
         if fd is not None:
             try:
@@ -465,13 +472,35 @@ def runner_alive(account_id):
                 pass
 
 
+_STALE_PROGRESS_SECONDS = 600  # 10 minutes without a heartbeat → stale
+
+
 def heal_stale_progress(progress):
     """If progress claims syncing/starting but no runner exists, flip to
     'stopped' and persist. Returns True if a heal was applied. Use this
     everywhere progress.status is read for gating decisions, not just in
     the status poll -- otherwise a crashed runner blocks all writes until
-    the UI polls."""
-    if progress.status in ("syncing", "starting") and not runner_alive(progress.account_id):
+    the UI polls.
+
+    Two independent checks:
+    1. flock probe (runner_alive) — fast and reliable when the filesystem
+       cooperates.
+    2. Staleness timeout — if started_at is >10 min ago and the progress
+       file hasn't been updated (the sync loop calls save_throttled every
+       ~1s), the runner is dead regardless of what flock says.  This
+       catches edge cases where the lock probe fails (NFS, permissions).
+    """
+    if progress.status not in ("syncing", "starting"):
+        return False
+
+    stale_by_time = (
+        progress.started_at
+        and (int(time.time()) - progress.started_at) > _STALE_PROGRESS_SECONDS
+        and not progress.finished_at
+        and _progress_file_stale(progress.account_id)
+    )
+
+    if not runner_alive(progress.account_id) or stale_by_time:
         progress.status = "stopped"
         if not progress.finished_at:
             progress.finished_at = int(time.time())
@@ -479,6 +508,16 @@ def heal_stale_progress(progress):
         progress.save()
         return True
     return False
+
+
+def _progress_file_stale(account_id):
+    """True if sync_progress.json hasn't been modified in >_STALE_PROGRESS_SECONDS."""
+    path = os.path.join(config_manager.get_account_dir(account_id), "sync_progress.json")
+    try:
+        mtime = os.path.getmtime(path)
+        return (time.time() - mtime) > _STALE_PROGRESS_SECONDS
+    except OSError:
+        return True
 
 
 # Global flag to signal stop

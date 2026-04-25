@@ -1610,6 +1610,12 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
                         '</div>'
                     );
                 }
+                if (data.shared_albums_error) {
+                    self.appWin.getMsgBox().alert(
+                        SYNO.SDS.iCloudPhotoSync._T("album:shared_error_title"),
+                        SYNO.SDS.iCloudPhotoSync._T("album:shared_error_message")
+                    );
+                }
                 // Refresh counts in background
                 self._loadAlbumCounts(data.albums, 0);
             } else {

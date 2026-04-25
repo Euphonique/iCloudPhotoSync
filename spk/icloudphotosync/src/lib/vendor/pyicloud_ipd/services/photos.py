@@ -192,6 +192,7 @@ class PhotosService:
         )
         self._albums = None
         self._shared_albums = None
+        self._shared_albums_error = None
         self._shared_library = None
         self._shared_library_zone = None
 
@@ -740,10 +741,18 @@ class PhotosService:
             return self._shared_albums
 
         self._shared_albums = {}
+        self._shared_albums_error = None
         try:
             data = self._shared_zones()
             zones = data.get("zones", [])
-            LOGGER.debug("Shared zones response: %d zone(s)", len(zones))
+            LOGGER.info("Shared zones response: %d zone(s)", len(zones))
+            if not zones:
+                LOGGER.info(
+                    "No shared zones returned by iCloud.  This means the "
+                    "account has no Shared Albums (the legacy feature), or "
+                    "Apple's API did not return them.  Note: 'Shared Library' "
+                    "(iOS 16+) is a separate feature and listed separately."
+                )
             for zone in zones:
                 zone_id = zone.get("zoneID", {})
                 zone_name = zone_id.get("zoneName", "")
@@ -781,8 +790,9 @@ class PhotosService:
                 except Exception:
                     LOGGER.warning("Failed to read shared zone %s", zone_name, exc_info=True)
 
-        except Exception:
-            LOGGER.warning("Failed to fetch shared albums", exc_info=True)
+        except Exception as exc:
+            LOGGER.error("Failed to fetch shared albums: %s", exc, exc_info=True)
+            self._shared_albums_error = str(exc)
 
         return self._shared_albums
 

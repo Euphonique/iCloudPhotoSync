@@ -165,16 +165,19 @@ def _list_albums(params):
             })
 
         # Shared albums
+        shared_error = None
         try:
             shared = photos_svc.shared_albums
+            shared_error = getattr(photos_svc, "_shared_albums_error", None)
             for name, album in shared.items():
                 album_list.append({
                     "name": name,
                     "type": "shared",
                     "photo_count": cached_counts.get(name, -1),
                 })
-        except Exception:
-            logger.warning("Failed to list shared albums", exc_info=True)
+        except Exception as exc:
+            logger.error("Failed to list shared albums: %s", exc, exc_info=True)
+            shared_error = str(exc)
 
         # Shared Library (iOS 16+ family sharing — separate from shared albums)
         has_shared_library = False
@@ -192,11 +195,14 @@ def _list_albums(params):
         album_list.sort(key=_album_sort_key)
 
         cache_age = int(time.time()) - cache.get("updated", 0)
-        return {"success": True, "data": {
+        result = {
             "albums": album_list,
             "cache_age": cache_age,
             "has_shared_library": has_shared_library,
-        }}
+        }
+        if shared_error:
+            result["shared_albums_error"] = shared_error
+        return {"success": True, "data": result}
 
     except Exception as e:
         return _maybe_adp_error(e, 310)
