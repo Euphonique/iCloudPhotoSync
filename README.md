@@ -111,7 +111,6 @@ If you have ADP enabled, this app cannot access your iCloud Photos. ADP encrypts
 - Session cookies stored under `/var/packages/icloudphotosync/var/accounts/{id}/session/` with restrictive file permissions (owner-only)
 - All API endpoints require a valid DSM session and CSRF token
 - No telemetry, no analytics, no phone-home
-- See [SECURITY.md](SECURITY.md) for the full OWASP review
 
 
 ## License
