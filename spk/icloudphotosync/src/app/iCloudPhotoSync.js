@@ -2611,8 +2611,8 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
                       mode: "local", triggerAction: "all", editable: false,
                       value: 4, anchor: "100%" }
                 ]},
-                { xtype: "syno_fieldset", title: SYNO.SDS.iCloudPhotoSync._T("settings:section_photostream"), items: [
-                    { xtype: "syno_checkbox", fieldLabel: SYNO.SDS.iCloudPhotoSync._T("settings:label_photostream_sync"), name: "ps_enabled",
+                { xtype: "syno_fieldset", title: SYNO.SDS.iCloudPhotoSync._T("settings:section_full_library"), items: [
+                    { xtype: "syno_checkbox", fieldLabel: SYNO.SDS.iCloudPhotoSync._T("settings:label_full_library_sync"), name: "ps_enabled",
                       boxLabel: SYNO.SDS.iCloudPhotoSync._T("settings:checkbox_all_photos"), checked: true },
                     { xtype: "syno_combobox", fieldLabel: SYNO.SDS.iCloudPhotoSync._T("settings:label_folder_structure"), name: "ps_folder",
                       store: new Ext.data.ArrayStore({ fields: ["val", "label"], data: folderOptions }),
@@ -2818,9 +2818,10 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
             var f = self._field.bind(self);
             if (f("sync_interval")) f("sync_interval").setValue(data.sync_interval_hours || 6);
 
-            if (data.photostream) {
-                if (f("ps_enabled")) f("ps_enabled").setValue(data.photostream.enabled !== false);
-                if (f("ps_folder")) f("ps_folder").setValue(data.photostream.folder_structure || "year_month");
+            var fullLibrary = data.full_library || data.photostream;
+            if (fullLibrary) {
+                if (f("ps_enabled")) f("ps_enabled").setValue(fullLibrary.enabled !== false);
+                if (f("ps_folder")) f("ps_folder").setValue(fullLibrary.folder_structure || "year_month");
             }
             if (data.albums) {
                 if (f("album_enabled")) f("album_enabled").setValue(data.albums.enabled !== false);
@@ -2847,8 +2848,12 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
         var configData = {
             target_dir: this.targetDirField.getValue(),
             sync_interval_hours: parseInt(f("sync_interval") ? f("sync_interval").getValue() : 6, 10) || 6,
-            photostream: {
+            full_library: {
                 enabled: f("ps_enabled") ? f("ps_enabled").getValue() : true,
+                folder_structure: f("ps_folder") ? f("ps_folder").getValue() : "year_month"
+            },
+            photostream: {
+                enabled: false,
                 folder_structure: f("ps_folder") ? f("ps_folder").getValue() : "year_month"
             },
             albums: {

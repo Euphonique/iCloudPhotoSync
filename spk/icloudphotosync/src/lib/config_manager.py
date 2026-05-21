@@ -313,6 +313,10 @@ def get_sync_config(account_id):
             "enabled": True,
             "folder_structure": "year_month",  # year_month_day, year_month, year, flat
         },
+        "full_library": {
+            "enabled": True,
+            "folder_structure": "year_month",  # year_month_day, year_month, year, flat
+        },
         "albums": {
             "enabled": True,
             "folder_structure": "flat",  # year_month_day, year_month, year, flat
@@ -335,6 +339,12 @@ def get_sync_config(account_id):
     try:
         with open(path, "r") as f:
             saved = json.load(f)
+        # Backwards compatibility: older releases stored the "sync all
+        # photos" toggle under photostream even though the backend was using
+        # the CloudKit All Photos source.  Keep honoring that value when the
+        # new explicit full_library section is absent.
+        if "full_library" not in saved and "photostream" in saved:
+            defaults["full_library"].update(saved.get("photostream", {}))
         # Merge saved over defaults (keeps new defaults for missing keys)
         for k, v in saved.items():
             if isinstance(v, dict) and isinstance(defaults.get(k), dict):
@@ -363,5 +373,4 @@ def set_album_sync(account_id, album_name, enabled, library=None):
             config["albums"]["selected"][album_name] = enabled
         save_sync_config(account_id, config)
     return config
-
 

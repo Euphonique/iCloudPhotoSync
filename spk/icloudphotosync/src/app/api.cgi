@@ -365,6 +365,10 @@ def _build_diagnostics(sanitize):
             lines.append("  target_dir: %s" % sanitize(
                 sc.get("target_dir", "")))
             lines.append("  sync_interval: %s" % sc.get("sync_interval", ""))
+            fl = sc.get("full_library", {})
+            lines.append("  full_library.enabled: %s" % fl.get("enabled", ""))
+            lines.append("  full_library.folder_structure: %s" % fl.get(
+                "folder_structure", ""))
             ps = sc.get("photostream", {})
             lines.append("  photostream.enabled: %s" % ps.get("enabled", ""))
             lines.append("  photostream.folder_structure: %s" % ps.get(
