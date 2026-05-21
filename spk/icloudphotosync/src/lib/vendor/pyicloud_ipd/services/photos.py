@@ -394,6 +394,17 @@ class PhotosService:
         return False
 
     @property
+    def full_library(self):
+        """Return the true whole iCloud Photos library pseudo-album.
+
+        Do not look this up through ``albums["All Photos"]``: user-created
+        albums can have the same name and overwrite the synthetic entry in
+        the album listing.  This mirrors icloudpd's dedicated
+        ``library_object.all`` path.
+        """
+        return PhotoAlbum(self, "All Photos", album_type="all")
+
+    @property
     def albums(self):
         """Returns dict of album name -> PhotoAlbum."""
         if self._albums is not None:
