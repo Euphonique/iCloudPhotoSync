@@ -1083,9 +1083,19 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
                 var pct = 0;
                 var progressText = "";
                 var statusMsg = SYNO.SDS.iCloudPhotoSync._T("overview:status_files_syncing");
-                if (data.total_photos > 0) {
+                var fullLibraryProgress = data.total_photos_exact === false;
+                var totalKnown = !fullLibraryProgress;
+                var failed = data.failed_photos || 0;
+                if (!totalKnown) {
+                    if (failed > 0) {
+                        progressText = SYNO.SDS.iCloudPhotoSync._T("overview:progress_discovered_files_failed", [processed, failed]);
+                    } else {
+                        progressText = SYNO.SDS.iCloudPhotoSync._T("overview:progress_discovered_files", [processed]);
+                    }
+                    if (data.current_album) progressText += " (" + data.current_album + ")";
+                    statusMsg = progressText;
+                } else if (data.total_photos > 0) {
                     pct = Math.min(100, Math.round(processed * 100 / data.total_photos));
-                    var failed = data.failed_photos || 0;
                     if (failed > 0) {
                         progressText = SYNO.SDS.iCloudPhotoSync._T("overview:progress_files_failed", [pct, processed, data.total_photos, failed]);
                     } else {
@@ -1102,11 +1112,29 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
 
                 var progWrap = Ext.get("ics-sync-progress");
                 if (progWrap) {
-                    if (data.total_photos > 0) {
+                    if (!totalKnown) {
                         progWrap.dom.style.display = "";
+                        if (progWrap.dom.firstChild) {
+                            progWrap.dom.firstChild.style.display = "none";
+                        }
+                        var unknownFill = progWrap.dom.querySelector(".ics-sync-progress-fill");
+                        var unknownText = progWrap.dom.querySelector(".ics-sync-progress-text");
+                        if (unknownFill) {
+                            unknownFill.style.width = "0%";
+                            unknownFill.style.opacity = "1";
+                        }
+                        if (unknownText) unknownText.innerHTML = Ext.util.Format.htmlEncode(progressText);
+                    } else if (data.total_photos > 0) {
+                        progWrap.dom.style.display = "";
+                        if (progWrap.dom.firstChild) {
+                            progWrap.dom.firstChild.style.display = "";
+                        }
                         var fill = progWrap.dom.querySelector(".ics-sync-progress-fill");
                         var ptxt = progWrap.dom.querySelector(".ics-sync-progress-text");
-                        if (fill) fill.style.width = pct + "%";
+                        if (fill) {
+                            fill.style.width = pct + "%";
+                            fill.style.opacity = "1";
+                        }
                         if (ptxt) ptxt.innerHTML = Ext.util.Format.htmlEncode(progressText);
                     } else {
                         progWrap.dom.style.display = "none";
@@ -2611,8 +2639,8 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
                       mode: "local", triggerAction: "all", editable: false,
                       value: 4, anchor: "100%" }
                 ]},
-                { xtype: "syno_fieldset", title: SYNO.SDS.iCloudPhotoSync._T("settings:section_photostream"), items: [
-                    { xtype: "syno_checkbox", fieldLabel: SYNO.SDS.iCloudPhotoSync._T("settings:label_photostream_sync"), name: "ps_enabled",
+                { xtype: "syno_fieldset", title: SYNO.SDS.iCloudPhotoSync._T("settings:section_full_library"), items: [
+                    { xtype: "syno_checkbox", fieldLabel: SYNO.SDS.iCloudPhotoSync._T("settings:label_full_library_sync"), name: "ps_enabled",
                       boxLabel: SYNO.SDS.iCloudPhotoSync._T("settings:checkbox_all_photos"), checked: true },
                     { xtype: "syno_combobox", fieldLabel: SYNO.SDS.iCloudPhotoSync._T("settings:label_folder_structure"), name: "ps_folder",
                       store: new Ext.data.ArrayStore({ fields: ["val", "label"], data: folderOptions }),
@@ -2818,9 +2846,10 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
             var f = self._field.bind(self);
             if (f("sync_interval")) f("sync_interval").setValue(data.sync_interval_hours || 6);
 
-            if (data.photostream) {
-                if (f("ps_enabled")) f("ps_enabled").setValue(data.photostream.enabled !== false);
-                if (f("ps_folder")) f("ps_folder").setValue(data.photostream.folder_structure || "year_month");
+            var fullLibrary = data.full_library || data.photostream;
+            if (fullLibrary) {
+                if (f("ps_enabled")) f("ps_enabled").setValue(fullLibrary.enabled !== false);
+                if (f("ps_folder")) f("ps_folder").setValue(fullLibrary.folder_structure || "year_month");
             }
             if (data.albums) {
                 if (f("album_enabled")) f("album_enabled").setValue(data.albums.enabled !== false);
@@ -2847,8 +2876,12 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
         var configData = {
             target_dir: this.targetDirField.getValue(),
             sync_interval_hours: parseInt(f("sync_interval") ? f("sync_interval").getValue() : 6, 10) || 6,
-            photostream: {
+            full_library: {
                 enabled: f("ps_enabled") ? f("ps_enabled").getValue() : true,
+                folder_structure: f("ps_folder") ? f("ps_folder").getValue() : "year_month"
+            },
+            photostream: {
+                enabled: false,
                 folder_structure: f("ps_folder") ? f("ps_folder").getValue() : "year_month"
             },
             albums: {

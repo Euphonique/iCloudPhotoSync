@@ -46,6 +46,42 @@ def _remove_album_from_cache(account_id, album_name):
 
 
 SHARED_DIR = "Shared"
+FULL_LIBRARY_ALBUM = "All Photos"
+FULL_LIBRARY_ALBUM_ALIASES = (
+    FULL_LIBRARY_ALBUM,
+    "Full iCloud Photos Library",
+)
+FULL_LIBRARY_DIR = "Photos"
+LEGACY_FULL_LIBRARY_DIR = "Photostream"
+
+
+def _full_library_dir_name(target_dir):
+    """Choose the full-library output root without adding user config.
+
+    Existing installs used Photostream for the all-photos source; keep that
+    folder when it already exists so upgrades do not create a second tree.
+    New installs get the modern Photos folder name.
+    """
+    legacy_dir = os.path.join(target_dir, LEGACY_FULL_LIBRARY_DIR)
+    if os.path.isdir(legacy_dir):
+        return LEGACY_FULL_LIBRARY_DIR
+    return FULL_LIBRARY_DIR
+
+
+def _get_synced_checksums_for_albums(account_id, album_names):
+    """Return record_id -> (checksum, path, album) across compatible aliases."""
+    checksums = {}
+    for album_name in album_names:
+        album_checksums = sync_manifest.get_synced_checksums(
+            account_id, album_name)
+        for record_id, value in album_checksums.items():
+            existing = checksums.get(record_id)
+            candidate = (value[0], value[1], album_name)
+            if not existing:
+                checksums[record_id] = candidate
+            elif not os.path.exists(existing[1]) and os.path.exists(value[1]):
+                checksums[record_id] = candidate
+    return checksums
 
 _OLD_DIR_NAMES = {
     "Meine Mediathek": "",
@@ -523,6 +559,7 @@ class SyncProgress:
         self.status = "idle"  # idle, syncing, error, complete
         self.current_album = ""
         self.total_photos = 0
+        self.total_photos_exact = True
         self.synced_photos = 0
         self.skipped_photos = 0
         self.failed_photos = 0
@@ -531,12 +568,14 @@ class SyncProgress:
         self.error = ""
         self.warnings = []
         self._last_save_ts = 0.0
+        self._dedup_preseeded = False
 
     def to_dict(self):
         d = {
             "status": self.status,
             "current_album": self.current_album,
             "total_photos": self.total_photos,
+            "total_photos_exact": self.total_photos_exact,
             "synced_photos": self.synced_photos,
             "skipped_photos": self.skipped_photos,
             "failed_photos": self.failed_photos,
@@ -886,13 +925,27 @@ def _run_sync_locked(account_id):
         # preventing "Album not found" errors for recently changed albums.
         photos_svc.refresh_albums()
 
-        # Build a plan with photo counts upfront so total_photos is a
-        # stable denominator for the progress bar (no mid-run growth).
+        # Build a plan with album counts upfront.  Full-library sync is
+        # deliberately count-independent because some accounts get a stale
+        # small Hyperion count for the whole-library index.
         plan = []  # (album_name, folder_key, subfolder, photo_count, latest_date)
-        if sync_config.get("photostream", {}).get("enabled", True):
+        full_library_config = sync_config.get(
+            "full_library", sync_config.get("photostream", {}))
+        full_library_enabled = full_library_config.get(
+            "enabled",
+            sync_config.get("photostream", {}).get("enabled", True))
+        LOGGER.info(
+            "Full-library sync enabled=%s (source=CloudKit private/PrimarySync, "
+            "recordType=CPLAssetAndMasterByAssetDateWithoutHiddenOrDeleted)",
+            bool(full_library_enabled))
+
+        if full_library_enabled:
             try:
-                ps_album = photos_svc.albums.get("All Photos")
-                ps_count = ps_album.photo_count if ps_album else 0
+                full_album = photos_svc.full_library
+                full_count = full_album.photo_count if full_album else 0
+                LOGGER.info(
+                    "Full-library CloudKit count estimate: %s "
+                    "(not used as pagination limit)", full_count)
             except Exception as e:
                 from pyicloud_ipd.exceptions import PyiCloudADPProtectionException
                 if isinstance(e, PyiCloudADPProtectionException):
@@ -903,9 +956,21 @@ def _run_sync_locked(account_id):
                     progress.error = str(e)
                     progress.save()
                     return progress
-                LOGGER.exception("Failed to get photo_count for All Photos")
-                ps_count = 0
-            plan.append(("All Photos", "photostream", "", ps_count, 0))
+                LOGGER.exception("Failed to get full-library count estimate")
+                full_count = 0
+            # Keep the legacy "All Photos" manifest identity so upgrades can
+            # reuse existing rows and local files.  The folder_key, not this
+            # display name, selects the true CloudKit full-library source.
+            # Use 0 in the progress denominator initially because some iCloud
+            # accounts return a stale/small Hyperion count for the whole
+            # library; the full-library sync discovers the real total while
+            # paging forward from rank 0.
+            plan.append((FULL_LIBRARY_ALBUM, "full_library", "", 0, 0))
+        elif sync_config.get("photostream", {}).get("enabled", False):
+            LOGGER.warning(
+                "Legacy photostream.enabled is true but full-library sync is "
+                "disabled; photostream is not treated as a full iCloud Photos "
+                "library source.")
 
         if sync_config.get("albums", {}).get("enabled", True):
             selected = sync_config.get("albums", {}).get("selected", {})
@@ -984,21 +1049,40 @@ def _run_sync_locked(account_id):
                 except Exception:
                     LOGGER.exception("Failed to plan shared library albums")
 
+        has_full_library = any(p[1] == "full_library" for p in plan)
+        progress.total_photos_exact = not has_full_library
         progress.total_photos = sum(p[3] for p in plan)
 
-        # Pre-seed skipped count from manifest so the progress bar starts
-        # at the right percentage after a restart (instead of jumping to 0%).
-        # Photos already in the manifest will not increment skipped_photos
-        # again during dedup — see _dedup_preseeded flag in _sync_album.
-        try:
-            manifest_count = sync_manifest.count_unique_records(account_id)
-            progress.skipped_photos = min(manifest_count, progress.total_photos)
-        except Exception:
-            LOGGER.debug("Could not pre-seed progress from manifest")
+        if has_full_library:
+            # Full-library runs do not have an upfront denominator. Count
+            # already-synced rows as they are discovered instead of pre-seeding
+            # from the global manifest, which would double-count in mixed
+            # full-library + selected-album runs.
+            progress._dedup_preseeded = False
+        else:
+            # Pre-seed skipped count from manifest so the progress bar starts
+            # at the right percentage after a restart (instead of jumping to
+            # 0%). Photos already in the manifest will not increment
+            # skipped_photos again during dedup.
+            try:
+                manifest_count = sync_manifest.count_unique_records(account_id)
+                progress.skipped_photos = min(manifest_count, progress.total_photos)
+                progress._dedup_preseeded = True
+            except Exception:
+                progress._dedup_preseeded = False
+                LOGGER.debug("Could not pre-seed progress from manifest")
 
         progress.save()
 
         heic_convert_failures = []
+        LOGGER.info(
+            "Sync plan: full_library=%s selected_albums=%d shared_library=%s "
+            "total_count_estimate=%d",
+            any(p[1] == "full_library" for p in plan),
+            len([p for p in plan if p[1] == "albums"]),
+            any(p[1] == "shared_library" for p in plan),
+            progress.total_photos)
+
         for album_name, folder_key, subfolder, _count, _latest in plan:
             if should_stop(account_id):
                 break
@@ -1044,9 +1128,12 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
     """Sync a single album."""
     heic_convert_failures = []
     progress.current_album = album_name
+    progress.total_photos_exact = folder_key != "full_library"
     progress.save()
 
-    if folder_key == "shared_library":
+    if folder_key == "full_library":
+        album = photos_svc.full_library
+    elif folder_key == "shared_library":
         album = photos_svc.shared_library
     elif folder_key == "shared_library_albums":
         album = photos_svc.shared_library_albums.get(album_name)
@@ -1057,15 +1144,25 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
         return heic_convert_failures
 
     # Get folder structure config for this type (shared library uses photostream settings)
-    if folder_key in ("shared_library", "shared_library_albums"):
+    if folder_key == "full_library":
+        folder_config = sync_config.get(
+            "full_library", sync_config.get("photostream", {}))
+    elif folder_key in ("shared_library", "shared_library_albums"):
         folder_config = sync_config.get("photostream", {})
     else:
         folder_config = sync_config.get(folder_key, {})
-    folder_structure = folder_config.get("folder_structure", "year_month" if folder_key in ("photostream", "shared_library", "shared_library_albums") else "flat")
+    folder_structure = folder_config.get("folder_structure", "year_month" if folder_key in ("full_library", "photostream", "shared_library", "shared_library_albums") else "flat")
     folder_builder = FOLDER_BUILDERS.get(folder_structure, FOLDER_BUILDERS["flat"])
+    full_library_dir = None
+    if folder_key == "full_library":
+        full_library_dir = _full_library_dir_name(target_dir)
+        LOGGER.info(
+            "Full-library local folder: %s (legacy Photostream exists=%s)",
+            full_library_dir,
+            os.path.isdir(os.path.join(target_dir, LEGACY_FULL_LIBRARY_DIR)))
 
-    # total_photos is set upfront in run_sync from the plan — don't
-    # grow it here or the progress bar denominator shifts mid-run.
+    # Album totals are set upfront in run_sync.  Full-library totals grow
+    # as assets are discovered because its CloudKit count can be unreliable.
 
     # Track paths created in this run to handle same-name conflicts.
     # Lock guards both _resolve_conflict's read and the .add() write since
@@ -1079,16 +1176,38 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
     # because the DB-snapshot dedup below misses records added mid-run.
     seen_record_ids = set()
 
-    # Get already synced records for dedup
-    synced_checksums = sync_manifest.get_synced_checksums(account_id, album_name)
+    # Get already synced records for dedup.  Full-library sync keeps the
+    # canonical "All Photos" identity, but also recognizes the short-lived
+    # pre-release name used by early test builds.
+    if folder_key == "full_library":
+        synced_checksums = _get_synced_checksums_for_albums(
+            account_id, FULL_LIBRARY_ALBUM_ALIASES)
+    else:
+        synced_checksums = _get_synced_checksums_for_albums(
+            account_id, (album_name,))
 
-    # Fetch all photos from Apple (paginated). 400 is the largest size
-    # CloudKit reliably honors; halves the number of HTTP roundtrips
-    # versus 200 without triggering rate-limit responses in testing.
-    batch_size = 400
+    # Fetch photos from Apple (paginated).  User albums tolerate larger
+    # batches, but whole-library CloudKit pagination behaves like icloudpd:
+    # request small rank pages (100 assets / 200 records) and advance until
+    # an empty page.  Larger full-library requests can appear to stop at the
+    # first batch even when the library contains many more assets.
+    batch_size = 100 if folder_key == "full_library" else 400
     session = requests.Session()
 
-    LOGGER.info("Syncing album '%s' (photo_count=%s)", album_name, album.photo_count)
+    count_estimate = album.photo_count
+    if folder_key == "full_library":
+        LOGGER.info(
+            "Syncing full iCloud Photos library from CloudKit zone=%s "
+            "recordType=%s count_estimate=%s count_used_for_paging=false",
+            (album.zone_id or photos_svc.ZONE_ID).get("zoneName", "?"),
+            album.list_type,
+            count_estimate)
+        LOGGER.info(
+            "Current 'All Photos' source is true full-library CloudKit, "
+            "not Photostream. If this source returns only a small batch, "
+            "the sync will keep paging from rank 0 until CloudKit is exhausted.")
+    else:
+        LOGGER.info("Syncing album '%s' (photo_count=%s)", album_name, count_estimate)
 
     # Per-album perf accumulators (logged once at end of album).
     perf = {
@@ -1121,10 +1240,12 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                 LOGGER.debug("Skipped (pagination duplicate): %s in %s", photo.filename, album_name)
                 continue
             seen_record_ids.add(photo.id)
+            if folder_key == "full_library":
+                progress.total_photos += 1
 
             redownload_path = None
             if photo.id in synced_checksums:
-                existing_checksum, existing_path = synced_checksums[photo.id]
+                existing_checksum, existing_path, existing_album = synced_checksums[photo.id]
                 if existing_checksum and photo.checksum and existing_checksum == photo.checksum:
                     _t_ex = time.time()
                     _exists = os.path.exists(existing_path)
@@ -1132,8 +1253,16 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                     perf["exists_calls"] += 1
                     if _exists:
                         LOGGER.debug("Skipped (dedup): %s in %s", photo.filename, album_name)
-                        # Don't increment skipped_photos — these are already
-                        # counted in the manifest pre-seed at sync start.
+                        # If this run did not pre-seed manifest rows, count
+                        # no-op rows as they are encountered.
+                        if not getattr(progress, "_dedup_preseeded", False):
+                            progress.skipped_photos += 1
+                        if existing_album != album_name:
+                            sync_manifest.mark_synced(
+                                account_id, photo.id, album_name,
+                                os.path.basename(existing_path), existing_path,
+                                checksum=photo.checksum, size=photo.size,
+                                created=photo.created)
                         progress.save_throttled()
                         continue
                     else:
@@ -1148,12 +1277,14 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                 date_subfolder = folder_builder(photo.created)
                 filename = _build_filename(photo, sync_config)
 
-                if folder_key == "shared_library":
+                if folder_key == "full_library":
+                    dest_dir = os.path.join(target_dir, full_library_dir, date_subfolder)
+                elif folder_key == "shared_library":
                     dest_dir = os.path.join(target_dir, SHARED_DIR, date_subfolder)
                 elif subfolder:
                     dest_dir = os.path.join(target_dir, "Albums", subfolder, date_subfolder)
                 else:
-                    dest_dir = os.path.join(target_dir, "Photostream", date_subfolder)
+                    dest_dir = os.path.join(target_dir, LEGACY_FULL_LIBRARY_DIR, date_subfolder)
 
                 if sync_config.get("format_folders"):
                     ext = os.path.splitext(filename)[1].upper().lstrip(".")
@@ -1488,7 +1619,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
 
         progress.save()
 
-    total = album.photo_count or 0
+    total = count_estimate or 0
     MULTI_TRACK_THRESHOLD = 1000
     NUM_TRACKS = 4
 
@@ -1553,7 +1684,10 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
     else:
         # Single-track with one-batch-ahead prefetch. Still useful for
         # user-created albums (ASCENDING) and for small photostreams.
-        if folder_key == "photostream":
+        if folder_key == "full_library":
+            direction = "ASCENDING"
+            offset = 0
+        elif folder_key == "photostream":
             direction = "DESCENDING"
             offset = max(total - 1, 0)
         else:
@@ -1584,6 +1718,10 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
             photos = next_future.result()
             perf["fetch_wait"] += time.time() - _t_wait
             if not photos:
+                if folder_key == "full_library":
+                    LOGGER.info(
+                        "Full-library pagination reached empty page at offset=%d",
+                        offset)
                 break
 
             actual_step = len(photos) if direction == "ASCENDING" else -len(photos)
@@ -1606,5 +1744,18 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
         album_name, perf["batches"], perf["pairs"],
         perf["fetch_wait"], perf["local"], perf["exists_calls"], perf["exists_time"]
     )
+    if folder_key == "full_library":
+        LOGGER.info(
+            "Full-library sync discovered %d asset(s) from CloudKit zone=%s",
+            perf["pairs"],
+            (album.zone_id or photos_svc.ZONE_ID).get("zoneName", "?"))
+        if perf["pairs"] < 100:
+            LOGGER.warning(
+                "Full-library CloudKit enumeration discovered only %d asset(s). "
+                "The sync did page the true full-library source from rank 0; "
+                "if iCloud contains substantially more items, the current web "
+                "API session is not exposing them and this is no longer being "
+                "treated as Photostream.",
+                perf["pairs"])
 
     return heic_convert_failures
