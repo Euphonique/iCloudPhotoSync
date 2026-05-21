@@ -321,8 +321,8 @@ def _build_diagnostics(sanitize):
             with open(prog_path, "r") as f:
                 prog = _json.load(f)
             for k in ("status", "started_at", "finished_at", "total_photos",
-                       "synced_photos", "skipped_photos", "failed_photos",
-                       "current_album", "error"):
+                       "total_photos_exact", "synced_photos", "skipped_photos",
+                       "failed_photos", "current_album", "error"):
                 v = prog.get(k, "")
                 if k in ("started_at", "finished_at") and v:
                     v = "%s (%s)" % (v, _time.strftime(

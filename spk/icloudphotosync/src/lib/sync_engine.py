@@ -559,6 +559,7 @@ class SyncProgress:
         self.status = "idle"  # idle, syncing, error, complete
         self.current_album = ""
         self.total_photos = 0
+        self.total_photos_exact = True
         self.synced_photos = 0
         self.skipped_photos = 0
         self.failed_photos = 0
@@ -574,6 +575,7 @@ class SyncProgress:
             "status": self.status,
             "current_album": self.current_album,
             "total_photos": self.total_photos,
+            "total_photos_exact": self.total_photos_exact,
             "synced_photos": self.synced_photos,
             "skipped_photos": self.skipped_photos,
             "failed_photos": self.failed_photos,
@@ -1047,6 +1049,8 @@ def _run_sync_locked(account_id):
                 except Exception:
                     LOGGER.exception("Failed to plan shared library albums")
 
+        has_full_library = any(p[1] == "full_library" for p in plan)
+        progress.total_photos_exact = not has_full_library
         progress.total_photos = sum(p[3] for p in plan)
 
         if has_full_library:

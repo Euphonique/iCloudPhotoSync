@@ -1083,9 +1083,19 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
                 var pct = 0;
                 var progressText = "";
                 var statusMsg = SYNO.SDS.iCloudPhotoSync._T("overview:status_files_syncing");
-                if (data.total_photos > 0) {
+                var fullLibraryProgress = data.total_photos_exact === false;
+                var totalKnown = !fullLibraryProgress;
+                var failed = data.failed_photos || 0;
+                if (!totalKnown) {
+                    if (failed > 0) {
+                        progressText = SYNO.SDS.iCloudPhotoSync._T("overview:progress_discovered_files_failed", [processed, failed]);
+                    } else {
+                        progressText = SYNO.SDS.iCloudPhotoSync._T("overview:progress_discovered_files", [processed]);
+                    }
+                    if (data.current_album) progressText += " (" + data.current_album + ")";
+                    statusMsg = progressText;
+                } else if (data.total_photos > 0) {
                     pct = Math.min(100, Math.round(processed * 100 / data.total_photos));
-                    var failed = data.failed_photos || 0;
                     if (failed > 0) {
                         progressText = SYNO.SDS.iCloudPhotoSync._T("overview:progress_files_failed", [pct, processed, data.total_photos, failed]);
                     } else {
@@ -1102,11 +1112,29 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
 
                 var progWrap = Ext.get("ics-sync-progress");
                 if (progWrap) {
-                    if (data.total_photos > 0) {
+                    if (!totalKnown) {
                         progWrap.dom.style.display = "";
+                        if (progWrap.dom.firstChild) {
+                            progWrap.dom.firstChild.style.display = "none";
+                        }
+                        var unknownFill = progWrap.dom.querySelector(".ics-sync-progress-fill");
+                        var unknownText = progWrap.dom.querySelector(".ics-sync-progress-text");
+                        if (unknownFill) {
+                            unknownFill.style.width = "0%";
+                            unknownFill.style.opacity = "1";
+                        }
+                        if (unknownText) unknownText.innerHTML = Ext.util.Format.htmlEncode(progressText);
+                    } else if (data.total_photos > 0) {
+                        progWrap.dom.style.display = "";
+                        if (progWrap.dom.firstChild) {
+                            progWrap.dom.firstChild.style.display = "";
+                        }
                         var fill = progWrap.dom.querySelector(".ics-sync-progress-fill");
                         var ptxt = progWrap.dom.querySelector(".ics-sync-progress-text");
-                        if (fill) fill.style.width = pct + "%";
+                        if (fill) {
+                            fill.style.width = pct + "%";
+                            fill.style.opacity = "1";
+                        }
                         if (ptxt) ptxt.innerHTML = Ext.util.Format.htmlEncode(progressText);
                     } else {
                         progWrap.dom.style.display = "none";
