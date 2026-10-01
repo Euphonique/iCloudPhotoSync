@@ -3,7 +3,7 @@
 set -euo pipefail
 
 PKG_NAME="iCloudPhotoSync"
-PKG_VER="1.5.5"
+PKG_VER="$(cat "$(cd "$(dirname "$0")" && pwd)/spk/icloudphotosync/VERSION")"
 PKG_REV="1"
 DISPLAY_NAME="iCloud Photo Sync"
 DESCRIPTION="Automatically mirrors your iCloud photo library to a Synology NAS."
