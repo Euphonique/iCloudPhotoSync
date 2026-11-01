@@ -22,6 +22,16 @@ class PyiCloudServiceNotActivatedException(PyiCloudAPIResponseException):
     pass
 
 
+class PyiCloudSessionExpiredException(PyiCloudAPIResponseException):
+    """CloudKit rejected the web session (401 AUTHENTICATION_FAILED).
+
+    /validate can still succeed while the short-lived X-APPLE-WEBAUTH
+    cookies CloudKit needs are gone — the account then looks connected but
+    every Photos request fails with "no auth method found" (see #87).
+    """
+    pass
+
+
 class PyiCloudServiceUnavailableException(PyiCloudException):
     pass
 

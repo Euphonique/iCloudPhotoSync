@@ -282,31 +282,88 @@ def _build_filename(photo, config):
     return _sanitize_path_component(photo.filename)
 
 
-def _resolve_conflict(path, config, synced_this_run=None):
+def _name_taken(path, dir_cache=None):
+    """True if path exists, or a name differing only in case does.
+
+    btrfs is case-sensitive, but SMB/AFP clients and Synology Drive are not:
+    writing IMG_1.heic next to IMG_1.HEIC makes Drive rename ours to
+    *_Conflict, the next sync finds it missing and downloads it again —
+    every run, forever (see #85).
+
+    dir_cache maps directory -> set of lowercased entry names, so large
+    flat folders are listed once per sync instead of once per photo.
+    """
+    if os.path.lexists(path):
+        return True
+    d, name = os.path.split(path)
+    if dir_cache is None:
+        dir_cache = {}
+    names = dir_cache.get(d)
+    if names is None:
+        try:
+            names = {n.lower() for n in os.listdir(d)}
+        except OSError:
+            names = set()
+        dir_cache[d] = names
+    return name.lower() in names
+
+
+def _remember_name(path, dir_cache):
+    """Record a path we are about to create in the _name_taken cache."""
+    if dir_cache is None:
+        return
+    d, name = os.path.split(path)
+    if d in dir_cache:
+        dir_cache[d].add(name.lower())
+
+
+def _output_paths(path, extra_exts=()):
+    """path plus the sibling files a download will produce (e.g. the .jpg
+    written by HEIC conversion)."""
+    base = os.path.splitext(path)[0]
+    return [path] + [base + e for e in extra_exts]
+
+
+def _resolve_conflict(path, config, synced_this_run=None, dir_cache=None,
+                      extra_exts=()):
     """Handle file conflicts. Returns final path or None to skip.
 
     synced_this_run: set of paths downloaded in this sync run.
     If a conflict is with a file we just created (same name, different photo),
     always rename regardless of config to avoid data loss.
+
+    extra_exts: extensions of files the download will also create next to
+    path — HEIC→JPG conversion writes <base>.jpg, which must be free too.
+
+    Names are compared case-insensitively (see _name_taken).
     """
-    if not os.path.exists(path):
+    def taken(p):
+        return any(_name_taken(o, dir_cache) for o in _output_paths(p, extra_exts))
+
+    if not taken(path):
         return path
 
     conflict = config.get("conflict", "skip")
 
     # If the existing file was created in this same sync run,
     # always rename to avoid losing a different photo with the same name
-    if synced_this_run and path in synced_this_run:
+    if synced_this_run and any(o in synced_this_run
+                               for o in _output_paths(path, extra_exts)):
         conflict = "rename"
 
     if conflict == "overwrite":
-        return path
+        # Only overwrite exact matches — a case variant is a different
+        # file on disk and writing next to it would create the clash.
+        if not any(_name_taken(o, dir_cache) and not os.path.lexists(o)
+                   for o in _output_paths(path, extra_exts)):
+            return path
+        conflict = "rename"
     if conflict == "skip":
         return None
     if conflict == "rename":
         base, ext = os.path.splitext(path)
         i = 1
-        while os.path.exists("%s_%d%s" % (base, i, ext)):
+        while taken("%s_%d%s" % (base, i, ext)):
             i += 1
         return "%s_%d%s" % (base, i, ext)
     return None
@@ -815,7 +872,7 @@ def _run_sync_locked(account_id):
         return progress
 
     sync_config = config_manager.get_sync_config(account_id)
-    raw_target = sync_config.get("target_dir", config_manager.DEFAULT_VOLUME + "/iCloudPhotos")
+    raw_target = sync_config.get("target_dir", config_manager.DEFAULT_TARGET_DIR)
     target_dir = _resolve_target_dir(raw_target, account_id)
 
     if isinstance(target_dir, str) and target_dir.startswith("__INVALID_VOLUME__:"):
@@ -824,9 +881,9 @@ def _run_sync_locked(account_id):
         progress.error = (
             "The volume in %r does not exist on this NAS. "
             "Please go to Settings and select a valid target folder "
-            "(e.g. %s/iCloudPhotos). Syncing to a non-existent volume "
+            "(e.g. %s). Syncing to a non-existent volume "
             "would write to the system partition and fill it up."
-        ) % (volume_path, config_manager.DEFAULT_VOLUME)
+        ) % (volume_path, config_manager.DEFAULT_TARGET_DIR)
         LOGGER.error("Target volume does not exist: %s", volume_path)
         progress.save()
         return progress
@@ -836,7 +893,7 @@ def _run_sync_locked(account_id):
         progress.error = (
             "Konnte den DSM-Benutzer für das Home-Verzeichnis %r nicht "
             "ermitteln. Bitte einen expliziten Volume-Pfad wählen "
-            "(z.B. %s/iCloudPhotos)." % (raw_target, config_manager.DEFAULT_VOLUME)
+            "(z.B. %s)." % (raw_target, config_manager.DEFAULT_TARGET_DIR)
         )
         progress.save()
         return progress
@@ -867,9 +924,18 @@ def _run_sync_locked(account_id):
     client = icloud_client.get_client(account_id, account["apple_id"])
     if not client.restore_session():
         progress.status = "error"
-        progress.error = "Not authenticated -- re-login required"
+        if client.transient_error:
+            # Network/Apple outage (e.g. nightly ISP reconnect). The session
+            # is likely still valid — keep the account active so the next
+            # scheduled run retries instead of pausing sync (see #76).
+            LOGGER.warning("Apple unreachable for %s — sync skipped, will retry "
+                           "at the next scheduled run", account_id)
+            progress.error = ("Could not reach Apple's iCloud servers. "
+                              "The sync will be retried automatically.")
+        else:
+            progress.error = "Not authenticated -- re-login required"
+            config_manager.update_account(account_id, {"status": "re_auth_needed"})
         progress.save()
-        config_manager.update_account(account_id, {"status": "re_auth_needed"})
         return progress
 
     progress.status = "syncing"
@@ -878,11 +944,30 @@ def _run_sync_locked(account_id):
 
     try:
         photos_svc = client.api.photos
+        # Probe CloudKit once up front. Later calls (album counts, zone
+        # detection) swallow errors, so a rejected web session would
+        # otherwise end as a "complete" sync with nothing synced (#87).
+        photos_svc._private_zones()
     except Exception as e:
         from pyicloud_ipd.exceptions import (
             PyiCloudADPProtectionException,
             PyiCloudServiceNotActivatedException,
+            PyiCloudSessionExpiredException,
         )
+        if isinstance(e, PyiCloudSessionExpiredException):
+            LOGGER.error("CloudKit rejected the session for %s: %s", account_id, e)
+            progress.status = "error"
+            progress.error = str(e)
+            progress.save()
+            config_manager.update_account(account_id, {"status": "re_auth_needed"})
+            return progress
+        if icloud_client._is_transient_error(e):
+            LOGGER.warning("Apple unreachable for %s: %s", account_id, e)
+            progress.status = "error"
+            progress.error = ("Could not reach Apple's iCloud servers. "
+                              "The sync will be retried automatically.")
+            progress.save()
+            return progress
         if isinstance(e, PyiCloudADPProtectionException):
             LOGGER.error(
                 "iCloud Advanced Data Protection (ADP) appears to be enabled "
@@ -902,7 +987,12 @@ def _run_sync_locked(account_id):
             progress.error = str(e)
             progress.save()
             return progress
-        raise
+        LOGGER.exception("Could not access iCloud Photos for account %s", account_id)
+        progress.status = "error"
+        progress.error = str(e)
+        progress.finished_at = int(time.time())
+        progress.save()
+        return progress
 
     try:
         # Invalidate album cache so we fetch fresh data from iCloud,
@@ -967,6 +1057,8 @@ def _run_sync_locked(account_id):
             album_metas.sort(key=lambda t: t[2], reverse=True)
             for name, count, latest in album_metas:
                 alb = photos_svc.albums.get(name)
+                if alb is None:
+                    continue  # already reported and deselected by _album_meta
                 # Folders are containers without their own record type —
                 # querying their photos sends "recordType": null which Apple
                 # rejects with BAD_REQUEST (see #63). Their sub-albums are
@@ -982,16 +1074,20 @@ def _run_sync_locked(account_id):
                 plan.append((name, "albums", sub, count, latest))
 
         if photos_svc.has_shared_library:
-            try:
-                sl_album = photos_svc.shared_library
-                if sl_album:
-                    sl_count = sl_album.photo_count or 0
-                    plan.append(("All Photos", "shared_library", "", sl_count, 0))
-            except Exception:
-                LOGGER.exception("Failed to plan shared library")
+            sl_selected = sync_config.get("shared_library", {}).get("selected", {})
+            # The Albums tab's Shared Library "All Photos" checkbox was
+            # ignored — the whole shared library always synced (#71).
+            # Unset means "never touched": keep syncing like before.
+            if sl_selected.get("All Photos", True):
+                try:
+                    sl_album = photos_svc.shared_library
+                    if sl_album:
+                        sl_count = sl_album.photo_count or 0
+                        plan.append(("All Photos", "shared_library", "", sl_count, 0))
+                except Exception:
+                    LOGGER.exception("Failed to plan shared library")
 
             # Shared Library user albums
-            sl_selected = sync_config.get("shared_library", {}).get("selected", {})
             sl_enabled = [name for name, en in sl_selected.items() if en and name != "All Photos"]
             if sl_enabled:
                 try:
@@ -1043,6 +1139,10 @@ def _run_sync_locked(account_id):
 
         if should_stop(account_id):
             progress.status = "stopped"
+        elif progress.error:
+            # e.g. "Disk full — sync aborted": reporting "complete" hid the
+            # abort behind a green status
+            progress.status = "error"
         else:
             progress.status = "complete"
             if heic_convert_failures:
@@ -1064,6 +1164,9 @@ def _run_sync_locked(account_id):
         progress.error = str(e)
         progress.finished_at = int(time.time())
         progress.save()
+        from pyicloud_ipd.exceptions import PyiCloudSessionExpiredException
+        if isinstance(e, PyiCloudSessionExpiredException):
+            config_manager.update_account(account_id, {"status": "re_auth_needed"})
 
     clear_stop(account_id)
     return progress
@@ -1103,6 +1206,8 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
     # the download pool below mutates this set from multiple worker threads.
     synced_this_run = set()
     synced_lock = threading.Lock()
+    # Lowercased directory listings for case-insensitive conflict checks
+    dir_cache = {}
 
     # Track record_ids processed in this run. CloudKit's paginated album
     # queries can return the same record in multiple batches (overlapping
@@ -1167,14 +1272,39 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                         # counted in the manifest pre-seed at sync start.
                         progress.save_throttled()
                         continue
+                    elif _name_taken(existing_path, dir_cache):
+                        # A case variant took the slot (e.g. Synology Drive
+                        # renamed our copy to *_Conflict). Re-resolve the
+                        # name instead of recreating the clash (#85).
+                        LOGGER.info("File missing but name taken by a case "
+                                    "variant, re-resolving: %s", existing_path)
                     else:
                         LOGGER.info("Re-downloading (file missing): %s", existing_path)
                         redownload_path = existing_path
+                # The manifest pre-seed already counted this record as
+                # skipped, but it is processed again (file missing or photo
+                # changed) and will be counted as synced/failed — take it out
+                # so the progress can't read "149 of 99" and sit at 100%
+                # while downloads still run.
+                with progress_lock:
+                    progress.skipped_photos = max(0, progress.skipped_photos - 1)
+
+            # HEIC that will be converted also produces <base>.jpg
+            converts = (sync_config.get("formats", "original") in ("jpg_only", "both")
+                        and heic_converter.is_heic(photo.filename)
+                        and heic_converter.can_convert())
 
             if redownload_path:
                 dest_path = redownload_path
                 final_path = redownload_path
-                filename = os.path.basename(redownload_path)
+                if converts and not heic_converter.is_heic(redownload_path):
+                    # jpg_only records the converted .jpg in the manifest.
+                    # Download to the HEIC name so the converter recreates
+                    # the .jpg — writing the original straight to the .jpg
+                    # path stored HEIC bytes under a .jpg name.
+                    final_path = (os.path.splitext(redownload_path)[0]
+                                  + os.path.splitext(photo.filename)[1])
+                filename = os.path.basename(final_path)
             else:
                 date_subfolder = folder_builder(photo.created)
                 filename = _build_filename(photo, sync_config)
@@ -1193,8 +1323,11 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
 
                 dest_path = os.path.join(dest_dir, filename)
 
+                extra_exts = (".jpg",) if converts else ()
                 with synced_lock:
-                    final_path = _resolve_conflict(dest_path, sync_config, synced_this_run)
+                    final_path = _resolve_conflict(dest_path, sync_config,
+                                                   synced_this_run, dir_cache,
+                                                   extra_exts)
                     if final_path is None:
                         LOGGER.debug("Skipped (conflict): %s", dest_path)
                         progress.skipped_photos += 1
@@ -1204,37 +1337,47 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                     # pick the same name and race us to the file. Was dest_path
                     # before — that was wrong: rename-resolved final_path is
                     # what actually gets written.
-                    synced_this_run.add(final_path)
+                    for out in _output_paths(final_path, extra_exts):
+                        synced_this_run.add(out)
+                        _remember_name(out, dir_cache)
 
             if sync_config.get("albums", {}).get("deduplicate_hardlinks", True) and not redownload_path:
                 existing = sync_manifest.find_any_synced_path(account_id, photo.id)
-                if existing and existing != final_path:
+                link_path = final_path
+                if existing:
+                    # The existing copy may be the converted .jpg — link it
+                    # under its own extension, not as <name>.HEIC
+                    link_ext = os.path.splitext(existing)[1]
+                    if link_ext.lower() != os.path.splitext(final_path)[1].lower():
+                        link_path = os.path.splitext(final_path)[0] + link_ext
+                if existing and existing != link_path:
                     try:
-                        os.makedirs(os.path.dirname(final_path), exist_ok=True)
+                        os.makedirs(os.path.dirname(link_path), exist_ok=True)
                         try:
-                            os.chmod(os.path.dirname(final_path), 0o755)
+                            os.chmod(os.path.dirname(link_path), 0o755)
                         except OSError:
                             pass
-                        os.link(existing, final_path)
+                        os.link(existing, link_path)
                         ok = sync_manifest.mark_synced(
-                            account_id, photo.id, album_name, filename, final_path,
+                            account_id, photo.id, album_name,
+                            os.path.basename(link_path), link_path,
                             checksum=photo.checksum, size=photo.size, created=photo.created
                         )
                         if not ok:
                             # Roll back the hardlink so the next sync sees a
                             # clean state (no orphan file without manifest row).
                             try:
-                                os.remove(final_path)
+                                os.remove(link_path)
                             except OSError:
                                 pass
                             progress.failed_photos += 1
                             progress.save_throttled()
                             continue
                         with synced_lock:
-                            synced_this_run.add(final_path)
+                            synced_this_run.add(link_path)
                         progress.synced_photos += 1
                         progress.save_throttled()
-                        LOGGER.debug("Hardlinked %s -> %s", existing, final_path)
+                        LOGGER.debug("Hardlinked %s -> %s", existing, link_path)
                         continue
                     except OSError as e:
                         LOGGER.info("Hardlink failed (%s); falling back to download", e)

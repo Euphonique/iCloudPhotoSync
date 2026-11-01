@@ -33,6 +33,19 @@ from config_manager import get_account_dir
 logger = logging.getLogger(__name__)
 
 
+def _is_transient_error(exc):
+    """True if exc means Apple could not be reached, not that auth failed."""
+    import requests.exceptions
+    if isinstance(exc, (requests.exceptions.ConnectionError,
+                        requests.exceptions.Timeout)):
+        return True
+    try:
+        from pyicloud_ipd.exceptions import PyiCloudServiceUnavailableException
+        return isinstance(exc, PyiCloudServiceUnavailableException)
+    except ImportError:
+        return False
+
+
 class ICloudClient:
     """Wraps PyiCloudService with session persistence per account."""
 
@@ -43,6 +56,7 @@ class ICloudClient:
         self.session_dir = get_account_dir(account_id)
         self.api = None
         self._error = None
+        self.transient_error = False
 
     def login(self):
         """Attempt login. Returns dict with status info."""
@@ -216,7 +230,14 @@ class ICloudClient:
             return {"success": False, "error": str(e)}
 
     def restore_session(self):
-        """Try to restore a previously authenticated session."""
+        """Try to restore a previously authenticated session.
+
+        On failure, self.transient_error tells the caller whether Apple was
+        merely unreachable (network outage, DNS, 503 — the stored session
+        may still be fine) or the session was actually rejected. Only the
+        latter should flip the account to re_auth_needed (see #76).
+        """
+        self.transient_error = False
         if not PYICLOUD_AVAILABLE:
             return False
 
@@ -236,8 +257,11 @@ class ICloudClient:
                             self.apple_id)
                 return False
             return True
-        except Exception:
-            logger.warning("Session restore failed for %s", self.apple_id, exc_info=True)
+        except Exception as e:
+            self.transient_error = _is_transient_error(e)
+            logger.warning("Session restore failed for %s%s", self.apple_id,
+                           " (Apple unreachable, will retry)" if self.transient_error else "",
+                           exc_info=True)
             return False
 
     def is_authenticated(self):

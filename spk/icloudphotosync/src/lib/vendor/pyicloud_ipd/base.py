@@ -231,6 +231,18 @@ class PyiCloudService:
                         domain_to_use, self.domain)
             self._switch_domain(domain_to_use)
 
+    def refresh_web_session(self):
+        """Mint fresh WEBAUTH cookies from the stored session token.
+
+        Called when CloudKit rejects a request with 401 although the
+        session itself validated (see PyiCloudSession.request).
+        """
+        self._authenticate_with_token()
+        if not self.data.get("dsInfo"):
+            raise PyiCloudFailedLoginException(
+                "accountLogin returned no account info")
+        self._webservices = self.data.get("webservices", {})
+
     @staticmethod
     def _normalize_domain(domain_value):
         """Normalize Apple's domainToUse response to 'com' or 'cn'."""

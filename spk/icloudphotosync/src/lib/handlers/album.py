@@ -46,12 +46,19 @@ def _album_sort_key(a):
     return (t, full_path.lower())
 
 
-def _maybe_adp_error(exc, fallback_code):
+def _maybe_adp_error(exc, fallback_code, account_id=None):
     """Return an ADP-specific error response when appropriate."""
     from pyicloud_ipd.exceptions import (
         PyiCloudADPProtectionException,
         PyiCloudServiceNotActivatedException,
+        PyiCloudSessionExpiredException,
     )
+    if isinstance(exc, PyiCloudSessionExpiredException):
+        # Surface the re-login button instead of a "connected" account
+        # whose every Photos request fails (#87).
+        if account_id:
+            config_manager.update_account(account_id, {"status": "re_auth_needed"})
+        return {"success": False, "error": {"code": 303, "message": str(exc)}}
     if isinstance(exc, PyiCloudADPProtectionException):
         return {"success": False, "error": {"code": ADP_ERROR_CODE, "message": str(exc)}}
     if isinstance(exc, PyiCloudServiceNotActivatedException):
@@ -174,6 +181,10 @@ def _get_authenticated_client(params):
 
     client = icloud_client.get_client(account_id, account["apple_id"])
     if not client.restore_session():
+        if client.transient_error:
+            return None, {"success": False, "error": {"code": 313, "message":
+                "Could not reach Apple's iCloud servers. Check the NAS "
+                "network connection and try again."}}
         return None, {"success": False, "error": {"code": 303, "message": "Not authenticated"}}
 
     return client, None
@@ -244,14 +255,16 @@ def _list_albums(params):
                 cache.get("types", {}).pop(key, None)
         album_types = cache.setdefault("types", {})
         counts = cache.setdefault("counts", {})
+        # Every album gets a cache row (-1 = count not loaded yet, rendered
+        # as "…"). Rows used to appear only once a count had loaded, so a
+        # timed-out count pass left the cached tree permanently incomplete
+        # (#81).
         for a in album_list:
             album_types[a["name"]] = a["type"]
-            if a["type"] == "folder":
-                counts.setdefault(a["name"], 0)
+            counts.setdefault(a["name"], 0 if a["type"] == "folder" else -1)
         for a in shared_library_list:
             album_types["sl:" + a["name"]] = a["type"]
-            if a["type"] == "folder":
-                counts.setdefault("sl:" + a["name"], 0)
+            counts.setdefault("sl:" + a["name"], 0 if a["type"] == "folder" else -1)
         _save_cache(account_id, cache)
 
         cache_age = int(time.time()) - cache.get("updated", 0)
@@ -272,7 +285,7 @@ def _list_albums(params):
         return {"success": True, "data": result}
 
     except Exception as e:
-        return _maybe_adp_error(e, 310)
+        return _maybe_adp_error(e, 310, account_id)
 
 
 def _find_album(photos_svc, album_name, library="personal"):
@@ -321,7 +334,7 @@ def _album_count(params):
         return {"success": True, "data": {"album": album_name, "photo_count": count}}
 
     except Exception as e:
-        return _maybe_adp_error(e, 312)
+        return _maybe_adp_error(e, 312, account_id)
 
 
 def _list_photos(params):

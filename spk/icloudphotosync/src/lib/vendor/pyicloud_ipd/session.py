@@ -12,6 +12,7 @@ from pyicloud_ipd.exceptions import (
     PyiCloudAPIResponseException,
     PyiCloudServiceNotActivatedException,
     PyiCloudServiceUnavailableException,
+    PyiCloudSessionExpiredException,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -47,7 +48,7 @@ class PyiCloudSession(Session):
         self.service = service
         super().__init__()
 
-    def request(self, method, url, **kwargs):
+    def request(self, method, url, _auth_retry=True, **kwargs):
         # Charge logging to the right service endpoint
         try:
             callee = inspect.stack()[2]
@@ -111,6 +112,22 @@ class PyiCloudSession(Session):
         except Exception:
             LOGGER.warning("Failed to save cookies to %s",
                            self.cookies.filename, exc_info=True)
+
+        # CloudKit answers 401 AUTHENTICATION_FAILED ("no auth method found")
+        # once the short-lived WEBAUTH cookies have expired, even though
+        # /validate still accepts the session. accountLogin with the stored
+        # session token mints fresh cookies — retry the request once.
+        if (response.status_code == 401 and _auth_retry
+                and "ckdatabasews" in url
+                and self.service.session_data.get("session_token")):
+            LOGGER.info("CloudKit rejected the web session (401) — "
+                        "refreshing cookies via accountLogin and retrying")
+            try:
+                self.service.refresh_web_session()
+            except Exception:
+                LOGGER.warning("Web session refresh failed", exc_info=True)
+            else:
+                return self.request(method, url, _auth_retry=False, **kwargs)
 
         if not response.ok and (
             content_type not in json_mimetypes or response.status_code in [421, 450, 500]
@@ -181,7 +198,14 @@ class PyiCloudSession(Session):
             and reason == "Missing X-APPLE-WEBAUTH-TOKEN cookie"
         ):
             raise PyiCloud2SARequiredException(self.service.apple_id)
-        if code in ("ZONE_NOT_FOUND", "AUTHENTICATION_FAILED"):
+        if code == "AUTHENTICATION_FAILED":
+            raise PyiCloudSessionExpiredException(
+                "Apple rejected the iCloud session (%s). Please sign in "
+                "again in iCloud Photo Sync. If this keeps happening, sign "
+                "in once at icloud.com/photos in a browser and check that "
+                "'Access iCloud Data on the Web' is enabled for this Apple "
+                "ID." % (reason or "no auth method found"), code)
+        if code == "ZONE_NOT_FOUND":
             reason = (
                 "Please log into https://icloud.com/ to manually "
                 "finish setting up your iCloud service"

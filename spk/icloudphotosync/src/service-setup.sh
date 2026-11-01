@@ -14,6 +14,15 @@ STARTUP_ERR="${LOG_DIR}/startup-error.log"
 PYTHON_BIN="${SYNOPKG_PKGDEST}/env/bin/python3"
 
 detect_default_volume() {
+    # The iCloudPhotos share is created on the package's volume, which is
+    # not necessarily the first one (see #78).
+    for v in /volume[0-9]*; do
+        [ -d "$v/iCloudPhotos" ] && echo "$v" && return
+    done
+    if [ -n "$SYNOPKG_PKGDEST_VOL" ] && [ -d "$SYNOPKG_PKGDEST_VOL" ]; then
+        echo "$SYNOPKG_PKGDEST_VOL"
+        return
+    fi
     for v in /volume[0-9]*; do
         [ -d "$v" ] && case "$v" in *USB*|*@*) continue;; esac && echo "$v" && return
     done

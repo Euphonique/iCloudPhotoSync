@@ -114,7 +114,7 @@ Sadly had to remove the Shared Albums feature from Settings, Albums tab, and syn
 
 - Apple password is **never stored permanently** — it is only held temporarily during the 2FA handshake, encrypted with PBKDF2-derived keys and HMAC-authenticated, and kept in RAM only (`/dev/shm`). It is discarded immediately after authentication completes.
 - Session cookies stored under `/var/packages/icloudphotosync/var/accounts/{id}/session/` with restrictive file permissions (owner-only)
-- All API endpoints require a valid DSM session and CSRF token
+- All API endpoints require a logged-in DSM user: every request is verified against DSM's `authenticate.cgi`, including the SynoToken when DSM's CSRF protection is enabled
 - No telemetry, no analytics, no phone-home
 
 

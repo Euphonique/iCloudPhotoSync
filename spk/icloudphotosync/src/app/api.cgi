@@ -63,9 +63,11 @@ def _is_icloud_url(url):
     try:
         parsed = urllib.parse.urlparse(url)
         host = (parsed.hostname or "").lower()
+        # China accounts are served from icloud-content.com.cn
         return (
             parsed.scheme in ("http", "https")
-            and (host.endswith(".icloud-content.com") or host == "icloud-content.com")
+            and any(host == d or host.endswith("." + d)
+                    for d in ("icloud-content.com", "icloud-content.com.cn"))
         )
     except Exception:
         return False
@@ -567,15 +569,75 @@ def export_logs_zip():
     sys.stdout.buffer.write(data)
 
 
-def _method_from_query():
-    """Parse the 'method' value from QUERY_STRING without touching stdin."""
+def _query_param(name):
+    """Parse one value from QUERY_STRING without touching stdin."""
     qs = os.environ.get("QUERY_STRING", "")
     parsed = urllib.parse.parse_qs(qs)
-    vals = parsed.get("method", [])
+    vals = parsed.get(name, [])
     return vals[0] if vals else ""
 
 
+def _method_from_query():
+    """Parse the 'method' value from QUERY_STRING without touching stdin."""
+    return _query_param("method")
+
+
+AUTHENTICATE_CGI = "/usr/syno/synoman/webman/modules/authenticate.cgi"
+
+
+def _dsm_user():
+    """Return the DSM user who sent this request, or "" if not logged in.
+
+    DSM does not authenticate CGIs under /webman/3rdparty/ by itself (#77).
+    Synology's developer guide says to ask authenticate.cgi, which checks
+    the session cookie and — with CSRF protection enabled — the SynoToken.
+    It reads the token from QUERY_STRING, so the token the frontend sends
+    (X-SYNO-TOKEN header for Ajax, SynoToken param for <img>/downloads)
+    is passed on that way. It must never see our POST body.
+    """
+    import subprocess
+    # DSM's own Ajax hook sends the token URI-encoded; parse_qs already
+    # decodes the query parameter
+    token = urllib.parse.unquote(os.environ.get("HTTP_X_SYNO_TOKEN", "")) or \
+        _query_param("SynoToken")
+    env = dict(os.environ)
+    env["QUERY_STRING"] = ("SynoToken=" + urllib.parse.quote(token)) if token else ""
+    env["REQUEST_METHOD"] = "GET"
+    env.pop("CONTENT_LENGTH", None)
+    env.pop("CONTENT_TYPE", None)
+    try:
+        result = subprocess.run(
+            [AUTHENTICATE_CGI], env=env,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    lines = [ln.strip() for ln in result.stdout.decode("utf-8", "replace").splitlines()]
+    lines = [ln for ln in lines if ln]
+    return lines[-1] if lines else ""
+
+
+def _deny():
+    body = json.dumps({"success": False, "error": {
+        "code": 401, "message": "Not logged in to DSM — please reload the page."}})
+    print("Status: 401 Unauthorized")
+    print("Content-Type: application/json")
+    print("Content-Length: %d" % len(body))
+    print()
+    print(body)
+
+
 def main():
+    # Every endpoint touches Apple credentials, the user's photos or the
+    # filesystem — none may be reachable without a DSM login (#77).
+    user = _dsm_user()
+    if not user:
+        _deny()
+        return
+    # Lets handlers resolve /home/... paths for the requesting user
+    os.environ["ICS_DSM_USER"] = user
+
     # Read the method from QUERY_STRING first so POST bodies (download_zip)
     # aren't accidentally consumed by cgi.FieldStorage before the handler runs.
     method = _method_from_query()
@@ -611,6 +673,10 @@ def main():
         result = handler(params)
         respond(**result)
     except Exception as e:
+        # The album handler wires the root logger to album.log on import;
+        # without this the error only reached the browser (#68).
+        import logging
+        logging.getLogger("api").exception("Unhandled error in method %r", method)
         respond(False, error={"code": 500, "message": str(e)})
 
 

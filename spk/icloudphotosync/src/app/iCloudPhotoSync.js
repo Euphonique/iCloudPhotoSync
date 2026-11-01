@@ -99,6 +99,37 @@ SYNO.SDS.iCloudPhotoSync._showMsg = function (title, msg, level) {
     });
 };
 
+// DSM does not authenticate /webman/3rdparty/ CGIs on its own; api.cgi checks
+// the session via authenticate.cgi, which needs the SynoToken when CSRF
+// protection is enabled (#77). Ajax requests carry it as X-SYNO-TOKEN header,
+// URLs that can't send headers (<img>, downloads) as SynoToken parameter.
+SYNO.SDS.iCloudPhotoSync.API_URL = "/webman/3rdparty/iCloudPhotoSync/api.cgi";
+
+// DSM stores the token URI-encoded and decodes it before use; do the same
+SYNO.SDS.iCloudPhotoSync.synoToken = function () {
+    var raw = "";
+    try {
+        if (typeof _S === "function") raw = _S("SynoToken") || "";
+    } catch (e) {}
+    if (!raw) {
+        try { raw = (SYNO.SDS.Session && SYNO.SDS.Session.SynoToken) || ""; } catch (e2) {}
+    }
+    try { return decodeURIComponent(raw); } catch (e3) { return raw; }
+};
+
+SYNO.SDS.iCloudPhotoSync.apiUrl = function (query) {
+    var token = SYNO.SDS.iCloudPhotoSync.synoToken();
+    return SYNO.SDS.iCloudPhotoSync.API_URL + "?" + query +
+        (token ? "&SynoToken=" + encodeURIComponent(token) : "");
+};
+
+Ext.Ajax.on("beforerequest", function (conn, options) {
+    if (!options || typeof options.url !== "string" ||
+        options.url.indexOf(SYNO.SDS.iCloudPhotoSync.API_URL) !== 0) return;
+    var token = SYNO.SDS.iCloudPhotoSync.synoToken();
+    if (token) options.headers = Ext.apply({}, options.headers, { "X-SYNO-TOKEN": token });
+});
+
 // Global click bridges for inline onclick attributes in dynamically rendered HTML.
 // The OverviewTab repaints via body.update() which strips Ext event listeners,
 // so we route clicks through these stable globals instead.
@@ -301,13 +332,17 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.MainWindow", {
     },
 
     // Helper: call our Python CGI backend via the 3rdparty path
-    apiRequest: function (method, params, callback, usePost) {
+    apiRequest: function (method, params, callback, usePost, timeoutMs) {
         var url = "/webman/3rdparty/iCloudPhotoSync/api.cgi";
         var allParams = Ext.apply({ method: method }, params || {});
         Ext.Ajax.request({
             url: url,
             params: allParams,
             method: usePost ? "POST" : "GET",
+            // ExtJS defaults to 30s. Apple sign-in and album listing for
+            // large libraries routinely take longer, and the request then
+            // failed with a bare "connection failed" (#68, #81).
+            timeout: timeoutMs || 120000,
             success: function (response) {
                 try {
                     var json = Ext.decode(response.responseText);
@@ -317,8 +352,14 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.MainWindow", {
                     if (callback) callback(false, {}, SYNO.SDS.iCloudPhotoSync._T("common:invalid_response"));
                 }
             },
-            failure: function () {
-                if (callback) callback(false, {}, SYNO.SDS.iCloudPhotoSync._T("common:connection_failed"));
+            failure: function (response) {
+                var detail = "";
+                if (response && response.isTimeout) {
+                    detail = " (timeout)";
+                } else if (response && response.status > 0) {
+                    detail = " (HTTP " + response.status + ")";
+                }
+                if (callback) callback(false, {}, SYNO.SDS.iCloudPhotoSync._T("common:connection_failed") + detail);
             }
         });
     },
@@ -650,6 +691,9 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
             this._syncPollTimer = null;
         }
         this.currentAccountData = accountData;
+        // Error of a sync that just failed, kept across this re-render
+        var pendingSyncError = this._pendingSyncError;
+        this._pendingSyncError = null;
 
         var statusCard, statusClass;
         if (accountData.status === "authenticated") {
@@ -767,12 +811,42 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
                 // previous UI session), switch into the syncing view and poll.
                 if (syncing0) {
                     self._pollSyncStatus(accountData.id);
+                } else {
+                    if (pendingSyncError && data.status === "error") {
+                        self._setErrorState(SYNO.SDS.iCloudPhotoSync._T("overview:status_error"),
+                            Ext.util.Format.htmlEncode(pendingSyncError));
+                    }
+                    self._watchForSync(accountData.id);
                 }
                 // Also check if a move is active.
                 self._pollMoveStatus(accountData.id, true);
                 self._updateStatsFromData(data);
             });
         }
+    },
+
+    // While idle, check every 30s whether the scheduler started a sync —
+    // otherwise the overview only noticed it after reopening the app.
+    _watchForSync: function (accountId) {
+        var self = this;
+        if (this._idleWatchTimer) clearTimeout(this._idleWatchTimer);
+        this._idleWatchTimer = setTimeout(function () {
+            self._idleWatchTimer = null;
+            if (self.isDestroyed || !self.currentAccountData ||
+                self.currentAccountData.id !== accountId || self._syncPollTimer) return;
+            self.appWin.apiRequest("sync", {
+                action: "status",
+                account_id: accountId
+            }, function (success, data) {
+                if (self.isDestroyed || !self.currentAccountData ||
+                    self.currentAccountData.id !== accountId) return;
+                if (success && data && (data.status === "syncing" || data.status === "starting")) {
+                    self._pollSyncStatus(accountId);
+                } else {
+                    self._watchForSync(accountId);
+                }
+            });
+        }, 30000);
     },
 
     _setSyncingState: function (title, subtitle) {
@@ -1046,6 +1120,11 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
         var self = this;
         if (this._syncPollTimer) {
             clearTimeout(this._syncPollTimer);
+            this._syncPollTimer = null;
+        }
+        if (this._idleWatchTimer) {
+            clearTimeout(this._idleWatchTimer);
+            this._idleWatchTimer = null;
         }
 
         this.appWin.apiRequest("sync", {
@@ -1157,6 +1236,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
                     );
                 }
                 self._refreshStats(accountId);
+                self._watchForSync(accountId);
             } else if (data.status === "error") {
                 self._stopRequested = false;
                 var pw2 = Ext.get("ics-sync-progress"); if (pw2) pw2.dom.style.display = "none";
@@ -1166,6 +1246,9 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
                 // (e.g. re_auth_needed after token expiry).  After refreshing
                 // the store, reload the current account's detail view so the
                 // connection info and reauth button reflect the new state.
+                // The reload re-renders the card, so keep the error to
+                // re-apply it there (it was wiped right away before).
+                self._pendingSyncError = data.error || "";
                 self._reloadCurrentAccount();
             } else if (data.status === "stopped") {
                 self._stopRequested = false;
@@ -1176,6 +1259,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
                     SYNO.SDS.iCloudPhotoSync._T("overview:status_connected")
                 );
                 self._refreshStats(accountId);
+                self._watchForSync(accountId);
             }
         });
     },
@@ -1728,7 +1812,10 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
     _isAlbumSyncEnabled: function (albumName, libraryId) {
         var cfg = this.syncConfig;
         if (libraryId === "shared") {
-            return !!((cfg.shared_library && cfg.shared_library.selected || {})[albumName]);
+            var slSel = (cfg.shared_library && cfg.shared_library.selected) || {};
+            // Backend syncs the shared "All Photos" until explicitly unticked
+            if (albumName === "All Photos" && !(albumName in slSel)) return true;
+            return !!slSel[albumName];
         }
         return !!((cfg.albums && cfg.albums.selected || {})[albumName]);
     },
@@ -1858,16 +1945,22 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
                         '<div style="font-size: 13px; color: #856404; line-height: 1.5;">' +
                         Ext.util.Format.htmlEncode(SYNO.SDS.iCloudPhotoSync._T("album:adp_message")) +
                         '</div></div></div>';
-                } else if (!hadCache) {
+                } else {
+                    // Also when a cached tree is shown — otherwise a failed
+                    // refresh left an incomplete cached list with no hint (#81).
+                    var msg = SYNO.SDS.iCloudPhotoSync._T("album:error_load_failed");
+                    if (errMsg) msg += ": " + errMsg;
                     html = '<div style="text-align: center; padding: 40px; color: #c00;">' +
-                        Ext.util.Format.htmlEncode(errMsg || SYNO.SDS.iCloudPhotoSync._T("album:error_load_failed")) +
+                        Ext.util.Format.htmlEncode(msg) +
                         '</div>';
                 }
                 if (html) {
                     self.photoPanel.body.update(html);
                 }
             }
-        });
+        // Listing walks every folder level on Apple's side; libraries with
+        // hundreds of nested albums need more than a minute (#81).
+        }, false, 600000);
     },
 
     _loadAlbumCounts: function (albums, index) {
@@ -1931,7 +2024,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
     },
 
     _renderThumb: function (photo, px, idx) {
-        var proxyBase = "/webman/3rdparty/iCloudPhotoSync/api.cgi?method=thumb&url=";
+        var proxyBase = SYNO.SDS.iCloudPhotoSync.apiUrl("method=thumb") + "&url=";
         var thumbUrl = photo.thumb_url ? proxyBase + encodeURIComponent(photo.thumb_url) : "";
         var title = Ext.util.Format.htmlEncode(photo.filename || "");
         var sizeKB = photo.size ? Math.round(photo.size / 1024) : 0;
@@ -2040,7 +2133,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
     _downloadPhoto: function (photo) {
         var url = photo.original_url || photo.medium_url || photo.url;
         if (!url) return;
-        var q = "/webman/3rdparty/iCloudPhotoSync/api.cgi?method=download" +
+        var q = SYNO.SDS.iCloudPhotoSync.apiUrl("method=download") +
                 "&url=" + encodeURIComponent(url) +
                 "&filename=" + encodeURIComponent(photo.filename || "photo.jpg");
         this._triggerBrowserDownload(q);
@@ -2060,7 +2153,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
         var zipname = "iCloud_export.zip";
         var self = this;
 
-        fetch("/webman/3rdparty/iCloudPhotoSync/api.cgi?method=download_zip", {
+        fetch(SYNO.SDS.iCloudPhotoSync.apiUrl("method=download_zip"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ items: items, zipname: zipname })
@@ -2104,7 +2197,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
 
     _openCart: function () {
         var self = this;
-        var proxyBase = "/webman/3rdparty/iCloudPhotoSync/api.cgi?method=thumb&url=";
+        var proxyBase = SYNO.SDS.iCloudPhotoSync.apiUrl("method=thumb") + "&url=";
 
         var buildHtml = function () {
             var ids = Object.keys(self._cart || {});
@@ -2324,7 +2417,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
         if (!v || !v.photos || !v.photos.length) return;
         if (idx < 0 || idx >= v.photos.length) return;
 
-        var proxyBase = "/webman/3rdparty/iCloudPhotoSync/api.cgi?method=thumb&url=";
+        var proxyBase = SYNO.SDS.iCloudPhotoSync.apiUrl("method=thumb") + "&url=";
         var state = { idx: idx };
 
         var imgEl, captionEl, counterEl;
@@ -3180,7 +3273,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.LogViewer", {
                         // Navigate to the CGI endpoint directly — the browser handles
                         // the Content-Disposition: attachment header and prompts to
                         // save the ZIP without leaving the SPA.
-                        var url = "/webman/3rdparty/iCloudPhotoSync/api.cgi?method=log_export";
+                        var url = SYNO.SDS.iCloudPhotoSync.apiUrl("method=log_export");
                         window.location.href = url;
                     }
                 }),

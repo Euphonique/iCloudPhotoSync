@@ -290,6 +290,9 @@ def _auth_status(params):
             updates["authenticated_at"] = int(time.time())
         config_manager.update_account(account_id, updates)
         new_status = "authenticated"
+    elif client.transient_error:
+        # Apple unreachable — don't pause sync over a network hiccup (#76)
+        new_status = account.get("status", "unknown")
     else:
         config_manager.update_account(account_id, {"status": "re_auth_needed"})
         new_status = "re_auth_needed"

@@ -39,6 +39,31 @@ def _detect_default_volume():
 DEFAULT_VOLUME = _detect_default_volume()
 
 
+def _detect_default_target_dir():
+    """Locate the iCloudPhotos share the package created on install.
+
+    DSM's data-share resource creates it on the volume the package is
+    installed on, which is not necessarily the first volume (see #78).
+    """
+    import glob
+    import re
+    for path in sorted(glob.glob("/volume[0-9]*/iCloudPhotos")):
+        if os.path.isdir(path):
+            return path
+    # Share not visible (yet) — fall back to the package's own volume
+    try:
+        real = os.path.realpath("/var/packages/iCloudPhotoSync/target")
+        m = re.match(r"^(/volume\d+)/", real)
+        if m and os.path.isdir(m.group(1)):
+            return m.group(1) + "/iCloudPhotos"
+    except OSError:
+        pass
+    return DEFAULT_VOLUME + "/iCloudPhotos"
+
+
+DEFAULT_TARGET_DIR = _detect_default_target_dir()
+
+
 PKG_VAR = os.environ.get(
     "SYNOPKG_PKGVAR",
     "/var/packages/iCloudPhotoSync/var"
@@ -184,13 +209,29 @@ def remove_account(account_id):
 
     # Clean up per-account directory
     import shutil
-    account_dir = os.path.join(ACCOUNTS_DIR, account_id)
+    account_dir = get_account_dir(account_id)
     if os.path.isdir(account_dir):
         shutil.rmtree(account_dir, ignore_errors=True)
 
 
+_ACCOUNT_ID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+
+
+def _check_account_id(account_id):
+    """Reject account ids that could escape ACCOUNTS_DIR.
+
+    Real ids are uuid4()[:8]; anything with path separators or dots comes
+    from a crafted request and must never reach os.path.join (see #80).
+    """
+    if (not isinstance(account_id, str) or not account_id
+            or len(account_id) > 64
+            or not set(account_id) <= _ACCOUNT_ID_CHARS):
+        raise ValueError("Invalid account id")
+    return account_id
+
+
 def get_account_dir(account_id):
-    return os.path.join(ACCOUNTS_DIR, account_id)
+    return os.path.join(ACCOUNTS_DIR, _check_account_id(account_id))
 
 
 # --- Temporary password storage for pending 2FA ---
@@ -213,6 +254,7 @@ _HMAC_LEN = 32
 
 
 def _pending_pw_path(account_id):
+    _check_account_id(account_id)
     if os.path.isdir(_SHM_DIR):
         return os.path.join(_SHM_DIR, "icloudphotosync_pw_%s" % account_id)
     return os.path.join(ACCOUNTS_DIR, account_id, ".pending_pw")
@@ -301,14 +343,14 @@ def clear_pending_password(account_id):
 # --- Per-account sync configuration ---
 
 def _sync_config_path(account_id):
-    return os.path.join(ACCOUNTS_DIR, account_id, "sync_config.json")
+    return os.path.join(get_account_dir(account_id), "sync_config.json")
 
 
 def get_sync_config(account_id):
     """Get sync configuration for an account."""
     path = _sync_config_path(account_id)
     defaults = {
-        "target_dir": DEFAULT_VOLUME + "/iCloudPhotos",
+        "target_dir": DEFAULT_TARGET_DIR,
         "photostream": {
             "enabled": True,
             "folder_structure": "year_month",  # year_month_day, year_month, year, flat
@@ -348,7 +390,7 @@ def get_sync_config(account_id):
 
 def save_sync_config(account_id, config):
     """Save sync configuration for an account."""
-    os.makedirs(os.path.join(ACCOUNTS_DIR, account_id), exist_ok=True)
+    os.makedirs(get_account_dir(account_id), exist_ok=True)
     path = _sync_config_path(account_id)
     atomic_write_json(path, config, indent=2)
 

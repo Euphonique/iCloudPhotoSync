@@ -32,6 +32,14 @@ def _sync_running(account_id):
 def handle(params):
     action = params.getvalue("action", "")
 
+    # Every action except validate_path works on an account's files. Reject
+    # unknown ids before any path is built from them, like the other
+    # handlers do (see #80).
+    if action != "validate_path":
+        account_id = params.getvalue("account_id", "").strip()
+        if account_id and not config_manager.get_account(account_id):
+            return {"success": False, "error": {"code": 204, "message": "Account not found"}}
+
     if action == "get":
         return _get_config(params)
     if action == "set":
@@ -104,7 +112,9 @@ def _get_dsm_username():
     synoscgi doesn't set REMOTE_USER, so we extract the session ID
     from the HTTP_COOKIE and query the Synology Auth API internally.
     """
-    user = os.environ.get("REMOTE_USER", "") or os.environ.get("HTTP_X_SYNO_USER", "")
+    # Set by api.cgi after authenticate.cgi verified the session
+    user = os.environ.get("ICS_DSM_USER", "") or \
+        os.environ.get("REMOTE_USER", "") or os.environ.get("HTTP_X_SYNO_USER", "")
     if user:
         return user
 
