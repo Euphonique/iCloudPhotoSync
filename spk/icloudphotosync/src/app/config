@@ -145,6 +145,7 @@
                 "settings:format_jpg_only",
                 "settings:format_both",
                 "settings:checkbox_format_folders",
+                "settings:checkbox_live_photos",
                 "settings:chooser_title",
                 "settings:prompt_title",
                 "settings:prompt_instruction",

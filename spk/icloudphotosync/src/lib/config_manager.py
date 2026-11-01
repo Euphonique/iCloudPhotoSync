@@ -370,6 +370,7 @@ def get_sync_config(account_id):
         "formats": "original",  # original, jpg_only, both
         "jpg_quality": 85,  # 10-100, JPEG quality for HEIC conversion
         "format_folders": False,  # separate HEIC/JPG subfolders
+        "live_photos": False,  # also save Live Photo videos as <name>.MOV
         "parallel_downloads": 4,  # 1, 2, 4, 8
         "sync_interval_hours": 6,
     }

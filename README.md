@@ -13,6 +13,7 @@ Built with the [SynoCommunity/spksrc](https://github.com/SynoCommunity/spksrc) c
 - **Parallel downloads** — 1/2/4/8 configurable per account
 - **Folder structure** — year / year-month / year-month-day / flat
 - **HEIC / JPG conversion** — keep originals, convert, or both
+- **Live Photos** — optionally save the video part as `.MOV` next to the photo (same name, as Synology Photos and Apple's export expect)
 - **Apple 2FA** via trusted-device push or SMS fallback
 - **Native DSM UI** — built with SYNO.ux components
 - **Multi-language** — English and German

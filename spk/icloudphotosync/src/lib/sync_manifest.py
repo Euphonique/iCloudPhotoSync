@@ -14,6 +14,11 @@ LOGGER = logging.getLogger("sync_manifest")
 
 DB_NAME = "sync_manifest.db"
 
+# Live Photo videos are stored as "<record_id>#live" rows. They count toward
+# storage but not toward the number of synced photos.
+LIVE_SUFFIX = "#live"
+_NOT_LIVE = "record_id NOT LIKE '%" + LIVE_SUFFIX + "'"
+
 _CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS synced_photos (
     record_id     TEXT NOT NULL,
@@ -149,7 +154,7 @@ def get_stats(account_id):
     """Get sync statistics for an account."""
     conn = _connect(account_id)
     try:
-        total = conn.execute("SELECT COUNT(*) as c FROM synced_photos").fetchone()["c"]
+        total = conn.execute("SELECT COUNT(*) as c FROM synced_photos WHERE " + _NOT_LIVE).fetchone()["c"]
         albums = conn.execute("SELECT COUNT(DISTINCT album) as c FROM synced_photos").fetchone()["c"]
         last = conn.execute("SELECT MAX(synced_at) as t FROM synced_photos").fetchone()["t"]
         total_size = conn.execute("SELECT SUM(size) as s FROM synced_photos").fetchone()["s"] or 0
@@ -164,10 +169,10 @@ def get_stats(account_id):
 
 
 def count_unique_records(account_id):
-    """Count distinct record_ids across all albums for an account."""
+    """Count distinct photos (record_ids) across all albums for an account."""
     conn = _connect(account_id)
     try:
-        row = conn.execute("SELECT COUNT(DISTINCT record_id) as c FROM synced_photos").fetchone()
+        row = conn.execute("SELECT COUNT(DISTINCT record_id) as c FROM synced_photos WHERE " + _NOT_LIVE).fetchone()
         return row["c"] if row else 0
     finally:
         conn.close()

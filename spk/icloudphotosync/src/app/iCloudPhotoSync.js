@@ -2787,7 +2787,9 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
                     { xtype: "syno_numberfield", fieldLabel: SYNO.SDS.iCloudPhotoSync._T("settings:label_jpg_quality"), name: "jpg_quality",
                       minValue: 10, maxValue: 100, value: 85, width: 80, hidden: true },
                     { xtype: "syno_checkbox", fieldLabel: " ", labelSeparator: "", name: "format_folders",
-                      boxLabel: SYNO.SDS.iCloudPhotoSync._T("settings:checkbox_format_folders") }
+                      boxLabel: SYNO.SDS.iCloudPhotoSync._T("settings:checkbox_format_folders") },
+                    { xtype: "syno_checkbox", fieldLabel: " ", labelSeparator: "", name: "live_photos",
+                      boxLabel: SYNO.SDS.iCloudPhotoSync._T("settings:checkbox_live_photos") }
                 ]},
                 { xtype: "syno_fieldset", title: SYNO.SDS.iCloudPhotoSync._T("settings:section_maintenance"), items: [
                     { xtype: "container", layout: "hbox", style: "margin: 4px 0;", items: [
@@ -2954,6 +2956,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
                 f("jpg_quality").setVisible((data.formats || "original") !== "original");
             }
             if (f("format_folders")) f("format_folders").setValue(!!data.format_folders);
+            if (f("live_photos")) f("live_photos").setValue(!!data.live_photos);
             if (f("parallel_downloads")) f("parallel_downloads").setValue(data.parallel_downloads || 4);
         });
     },
@@ -2979,6 +2982,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
             formats: f("formats") ? f("formats").getValue() : "original",
             jpg_quality: f("jpg_quality") ? parseInt(f("jpg_quality").getValue(), 10) : 85,
             format_folders: f("format_folders") ? f("format_folders").getValue() : false,
+            live_photos: f("live_photos") ? f("live_photos").getValue() : false,
             parallel_downloads: parseInt(f("parallel_downloads") ? f("parallel_downloads").getValue() : 4, 10) || 4
         };
 

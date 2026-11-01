@@ -1208,6 +1208,9 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
     synced_lock = threading.Lock()
     # Lowercased directory listings for case-insensitive conflict checks
     dir_cache = {}
+    # Also save the video part of Live Photos as <name>.MOV
+    from pyicloud_ipd.services.photos import LiveVideoAsset
+    live_enabled = bool(sync_config.get("live_photos", False))
 
     # Track record_ids processed in this run. CloudKit's paginated album
     # queries can return the same record in multiple batches (overlapping
@@ -1249,6 +1252,52 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
 
         _t_local = time.time()
         tasks = []
+
+        def _queue_live(photo, image_path):
+            """Queue the .MOV of a Live Photo next to its still image.
+
+            Called wherever the still ends up on disk (already synced,
+            hardlinked or about to download), so libraries synced before
+            the option was enabled get their videos on the next run.
+            """
+            if not (live_enabled and getattr(photo, "is_live", False) and image_path):
+                return
+            vid = LiveVideoAsset(photo._master, photo._asset)
+            if vid.manifest_id in seen_record_ids:
+                return
+            seen_record_ids.add(vid.manifest_id)
+            vpath = os.path.splitext(image_path)[0] + os.path.splitext(vid.filename)[1]
+            known = synced_checksums.get(vid.manifest_id)
+            ours = bool(known) and known[1] == vpath
+            if ours and os.path.exists(vpath) and known[0] == vid.checksum:
+                return  # already synced
+            with synced_lock:
+                # Never clobber a file we don't own (a reservation made by
+                # the still's conflict resolution counts as ours).
+                if (not ours and vpath not in synced_this_run
+                        and _name_taken(vpath, dir_cache)):
+                    LOGGER.info("Live Photo video skipped, name taken: %s", vpath)
+                    return
+                synced_this_run.add(vpath)
+                _remember_name(vpath, dir_cache)
+            if sync_config.get("albums", {}).get("deduplicate_hardlinks", True):
+                existing = sync_manifest.find_any_synced_path(account_id, vid.manifest_id)
+                if existing and existing != vpath and not os.path.lexists(vpath):
+                    try:
+                        os.link(existing, vpath)
+                        if sync_manifest.mark_synced(
+                                account_id, vid.manifest_id, album_name,
+                                os.path.basename(vpath), vpath,
+                                checksum=vid.checksum, size=vid.size,
+                                created=vid.created):
+                            return
+                        os.remove(vpath)
+                    except OSError as e:
+                        LOGGER.info("Hardlink failed (%s); falling back to download", e)
+            if not vid.original_url:
+                return
+            tasks.append((vid, vid.original_url, vpath, os.path.basename(vpath)))
+
         for photo in photos:
             if should_stop(account_id):
                 break
@@ -1271,6 +1320,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                         # Don't increment skipped_photos — these are already
                         # counted in the manifest pre-seed at sync start.
                         progress.save_throttled()
+                        _queue_live(photo, existing_path)
                         continue
                     elif _name_taken(existing_path, dir_cache):
                         # A case variant took the slot (e.g. Synology Drive
@@ -1323,7 +1373,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
 
                 dest_path = os.path.join(dest_dir, filename)
 
-                extra_exts = (".jpg",) if converts else ()
+                extra_exts = ((".jpg",) if converts else ()) +                     ((".MOV",) if live_enabled and photo.is_live else ())
                 with synced_lock:
                     final_path = _resolve_conflict(dest_path, sync_config,
                                                    synced_this_run, dir_cache,
@@ -1378,6 +1428,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                         progress.synced_photos += 1
                         progress.save_throttled()
                         LOGGER.debug("Hardlinked %s -> %s", existing, link_path)
+                        _queue_live(photo, link_path)
                         continue
                     except OSError as e:
                         LOGGER.info("Hardlink failed (%s); falling back to download", e)
@@ -1396,6 +1447,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                 with synced_lock:
                     synced_this_run.add(final_path)
             tasks.append((photo, download_url, final_path, filename))
+            _queue_live(photo, final_path)
 
         perf["local"] += time.time() - _t_local
 
@@ -1491,7 +1543,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
             already_expired = 0
             now_check = int(time.time())
             for photo, old_url, fpath, fname in expiring_tasks:
-                new_url = fresh_urls.get(photo.id)
+                new_url = photo.original_url if photo.id in fresh_urls else None
                 if new_url:
                     valid_tasks.append((photo, new_url, fpath, fname))
                     refreshed += 1
@@ -1550,10 +1602,12 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                         elif ok:
                             consecutive_fails = 0
                             if sync_manifest.mark_synced(
-                                account_id, photo.id, album_name, fname, fpath,
+                                account_id, photo.manifest_id, album_name, fname, fpath,
                                 checksum=photo.checksum, size=photo.size, created=photo.created
                             ):
-                                progress.synced_photos += 1
+                                # Live videos belong to a photo already counted
+                                if not isinstance(photo, LiveVideoAsset):
+                                    progress.synced_photos += 1
                             else:
                                 progress.failed_photos += 1
                         elif is_url_expired:
@@ -1605,7 +1659,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                             LOGGER.exception("Batch refresh failed after re-auth")
                     refreshed = 0
                     for photo, fpath, fname in expired_tasks:
-                        url = fresh_urls.get(photo.id)
+                        url = photo.original_url if photo.id in fresh_urls else None
                         if url:
                             refresh_retry_tasks.append((photo, url, fpath, fname))
                             refreshed += 1

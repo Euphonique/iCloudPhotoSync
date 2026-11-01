@@ -2,6 +2,7 @@
 import base64
 import json
 import logging
+import os
 import time
 import unicodedata
 
@@ -175,6 +176,12 @@ class PhotoAsset:
 
         # Record name for identification
         self.id = self._master.get("recordName", "")
+        # Key for the local sync manifest (Live Photo videos get their own)
+        self.manifest_id = self.id
+
+        # Live Photo: the motion part is a separate QuickTime resource
+        live = m.get("resOriginalVidComplRes", {}).get("value", {})
+        self.is_live = bool(live.get("downloadURL")) and not self.is_video
 
     @staticmethod
     def _fix_url(url):
@@ -223,6 +230,36 @@ class PhotoAsset:
 
     def __repr__(self):
         return "<PhotoAsset: %s>" % self.filename
+
+
+class LiveVideoAsset(PhotoAsset):
+    """The video part of a Live Photo (resOriginalVidComplRes).
+
+    Shares the master record (and record id, so URL refreshes look up the
+    right record) with its still image, but downloads the .MOV and is
+    tracked in the manifest under its own key.
+    """
+
+    def _parse(self):
+        super()._parse()
+        m = self._master.get("fields", {})
+        res = m.get("resOriginalVidComplRes", {}).get("value", {})
+        self.filename = os.path.splitext(self.filename)[0] + ".MOV"
+        self.item_type = "com.apple.quicktime-movie"
+        self.is_video = True
+        self.is_live = False
+        self.size = res.get("size", 0)
+        self.checksum = res.get("fileChecksum", "")
+        self.manifest_id = self.id + "#live"
+
+    @property
+    def original_url(self):
+        m = self._master.get("fields", {})
+        res = m.get("resOriginalVidComplRes", {}).get("value", {})
+        return self._fix_url(res.get("downloadURL"))
+
+    def __repr__(self):
+        return "<LiveVideoAsset: %s>" % self.filename
 
 
 class PhotosService:
@@ -340,16 +377,20 @@ class PhotosService:
         """
         if not photos:
             return {}
-        photo_map = {p.id: p for p in photos}
+        # A Live Photo's still and video share one record id — refresh the
+        # record once and update every object that uses it.
+        photo_map = {}
+        for p in photos:
+            photo_map.setdefault(p.id, []).append(p)
+        ids = list(photo_map)
         result = {}
         total_records = 0
         total_server_errors = 0
         total_deleted = 0
         total_no_url = 0
         lookup_broken = False
-        for i in range(0, len(photos), self._LOOKUP_CHUNK_SIZE):
-            chunk = photos[i:i + self._LOOKUP_CHUNK_SIZE]
-            record_names = [p.id for p in chunk]
+        for i in range(0, len(ids), self._LOOKUP_CHUNK_SIZE):
+            record_names = ids[i:i + self._LOOKUP_CHUNK_SIZE]
             data = self._lookup_records(record_names, zone_id=zone_id)
             records = data.get("records", [])
             total_records += len(records)
@@ -375,7 +416,8 @@ class PhotosService:
                     "resOriginalRes", {}).get("value", {})
                 url = orig.get("downloadURL")
                 if url:
-                    photo_map[rn]._master = record
+                    for obj in photo_map[rn]:
+                        obj._master = record
                     result[rn] = PhotoAsset._fix_url(url)
                 else:
                     total_no_url += 1
@@ -384,15 +426,15 @@ class PhotosService:
                                "aborting remaining refresh chunks")
                 lookup_broken = True
                 break
-            if i + self._LOOKUP_CHUNK_SIZE < len(photos):
+            if i + self._LOOKUP_CHUNK_SIZE < len(ids):
                 time.sleep(self._LOOKUP_CHUNK_DELAY)
-        not_returned = len(photos) - total_records
-        if len(photos) > 1:
+        not_returned = len(ids) - total_records
+        if len(ids) > 1:
             LOGGER.info(
                 "Batch refresh: requested=%d records_returned=%d "
                 "urls_found=%d server_errors=%d deleted=%d "
                 "no_url=%d not_returned=%d",
-                len(photos), total_records, len(result),
+                len(ids), total_records, len(result),
                 total_server_errors, total_deleted,
                 total_no_url, not_returned)
         return result
