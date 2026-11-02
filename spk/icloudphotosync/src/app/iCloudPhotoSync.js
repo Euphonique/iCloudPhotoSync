@@ -245,10 +245,12 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.MainWindow", {
                 ".ics-album-grid .ics-library-header { cursor: pointer; }" +
                 ".ics-album-grid .ics-library-header td { padding: 8px 8px 6px !important; }" +
                 ".ics-album-grid .ics-library-header:hover { background: #f5f7fa; }" +
-                ".ics-library-arrow { display: inline-block; width: 12px; font-size: 10px; color: #999; transition: transform 0.15s; margin-right: 4px; }" +
+                // Chevron: points down when expanded, right (›) when collapsed
+                ".ics-library-arrow { display: inline-block; position: relative; width: 12px; height: 12px; vertical-align: middle; margin: -2px 4px 0 0; transition: transform 0.15s; }" +
+                ".ics-library-arrow::before { content: ''; position: absolute; left: 3px; top: 1px; width: 5px; height: 5px; border-right: 1.5px solid #8a949e; border-bottom: 1.5px solid #8a949e; transform: rotate(45deg); }" +
                 ".ics-library-arrow.collapsed { transform: rotate(-90deg); }" +
                 // Native-style checkboxes
-                ".syno-ux-checkbox, .syno-ux-checkbox-checked { display: inline-block; border: 1px solid #b0b8c0; border-radius: 3px; background: #fff; cursor: pointer; }" +
+                ".syno-ux-checkbox, .syno-ux-checkbox-checked, .syno-ux-checkbox-indeterminate { display: inline-block; border: 1px solid #b0b8c0; border-radius: 3px; background: #fff; cursor: pointer; }" +
                 ".syno-ux-checkbox-checked { background: #057feb; border-color: #057feb; background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='white'%3E%3Cpath d='M6.5 11.5L3 8l1-1 2.5 2.5L12 4l1 1z'/%3E%3C/svg%3E\"); background-size: 16px; background-repeat: no-repeat; background-position: center; }" +
                 ".syno-ux-checkbox-indeterminate { background: #057feb; border-color: #057feb; background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='white'%3E%3Crect x='3' y='7' width='10' height='2' rx='1'/%3E%3C/svg%3E\"); background-size: 16px; background-repeat: no-repeat; background-position: center; }" +
                 // Settings form layout
@@ -1473,7 +1475,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
                             var arrowCls = "ics-library-arrow" + (collapsed ? " collapsed" : "");
                             meta.attr = 'style="padding: 0;"';
                             return '<div style="font-weight: 600; font-size: 13px; padding: 6px 0;">' +
-                                   '<span class="' + arrowCls + '">▼</span>' +
+                                   '<span class="' + arrowCls + '"></span>' +
                                    '<img src="/webman/3rdparty/iCloudPhotoSync/images/applephotos.png" style="width:16px;height:16px;vertical-align:middle;margin-right:6px;" />' +
                                    Ext.util.Format.htmlEncode(val) + '</div>';
                         }
@@ -1482,7 +1484,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
                         var icon = type === "shared" ? "👥" : type === "smart" ? "☆" : "📁";
                         if (type === "folder") {
                             var expanded = self._isFolderExpanded(record.get("library"), self._folderPath(record));
-                            icon = '<span class="ics-library-arrow' + (expanded ? "" : " collapsed") + '">▼</span>' + icon;
+                            icon = '<span class="ics-library-arrow' + (expanded ? "" : " collapsed") + '"></span>' + icon;
                         }
                         var count = record.get("photo_count");
                         var countStr = type === "folder" ? ""
@@ -1736,17 +1738,26 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
 
     _refreshGrid: function () {
         var self = this;
-        var scrollTop = this.albumListView.body ? this.albumListView.body.dom.scrollTop : 0;
+        // The grid scrolls inside view.scroller, not its body; loadData
+        // resets it to the top, so a folder toggle used to jump up (#54).
+        var view = this.albumListView.getView();
+        var scroller = view && view.scroller ? view.scroller.dom : null;
+        var scrollTop = scroller ? scroller.scrollTop : 0;
         var rows = this._buildStoreData();
 
         this.albumStore.loadData(rows);
         this._applyHeaderStyles(rows);
-        // Deferred re-apply in case the view wasn't ready synchronously
+        if (scroller) scroller.scrollTop = scrollTop;
+        // Deferred re-apply in case the view wasn't ready synchronously.
+        // The scroll position too: the clicked row's deferred focus
+        // (GridView focusEl, reset to the top by loadData) scrolls up again.
         (function () {
             var r = rows;
-            setTimeout(function () { self._applyHeaderStyles(r); }, 50);
+            setTimeout(function () {
+                self._applyHeaderStyles(r);
+                if (scroller) scroller.scrollTop = scrollTop;
+            }, 50);
         })();
-        if (this.albumListView.body) this.albumListView.body.dom.scrollTop = scrollTop;
     },
 
     _applyHeaderStyles: function (rows) {
