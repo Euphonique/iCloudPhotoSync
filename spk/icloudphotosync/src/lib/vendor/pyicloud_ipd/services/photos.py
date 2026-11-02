@@ -39,6 +39,55 @@ def _decode_b64_name(raw):
 _ROOT_FOLDER_NAMES = ("----Root-Folder----", "----Project-Root-Folder----")
 
 
+def album_key(name, parent_folder=None):
+    """Unique key of a user album/folder: its full folder path.
+
+    Albums used to be keyed by display name alone, so same-named items in
+    different folders (e.g. a "2012" folder under several parents)
+    overwrote each other (#81). Top-level albums keep their plain name.
+    """
+    return (parent_folder + "/" + name) if parent_folder else name
+
+
+def _record_created(record):
+    """CloudKit creation timestamp (ms) of a record, 0 if unknown."""
+    try:
+        return int((record.get("created") or {}).get("timestamp") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _unique_sibling_names(items):
+    """Make album names unique within their parent folder.
+
+    `items` is a list of (recordName, name, parentId, created). Returns
+    {recordName: unique_name}. The oldest album keeps its name, later ones
+    get " (2)", " (3)", … — like a file manager. Names are compared
+    case-insensitively because the albums become directories, which SMB
+    clients treat case-insensitively.
+    """
+    groups = {}
+    for rn, name, parent_rn, created in items:
+        groups.setdefault(parent_rn or "", []).append((created, rn, name))
+    result = {}
+    for siblings in groups.values():
+        siblings.sort()
+        taken = set(name.casefold() for _, _, name in siblings)
+        seen = set()
+        for _, rn, name in siblings:
+            if name.casefold() not in seen:
+                seen.add(name.casefold())
+                result[rn] = name
+                continue
+            n = 2
+            while ("%s (%d)" % (name, n)).casefold() in taken:
+                n += 1
+            unique = "%s (%d)" % (name, n)
+            taken.add(unique.casefold())
+            result[rn] = unique
+    return result
+
+
 def _build_parent_paths(parsed_records):
     """Build a dict mapping recordName → parent_folder path.
 
@@ -289,6 +338,11 @@ class PhotosService:
         self._shared_library = None
         self._shared_library_zone = None
         self._shared_library_albums = None
+        # Display name -> album key, for configs/manifests written before
+        # albums were keyed by path. Filled in the same order the old
+        # name-keyed dict was, so a name maps to the album that used to win.
+        self._legacy_album_keys = {}
+        self._legacy_shared_library_album_keys = {}
 
     def _query(self, payload):
         """Execute a CloudKit records query."""
@@ -487,11 +541,12 @@ class PhotosService:
 
     @property
     def albums(self):
-        """Returns dict of album name -> PhotoAlbum."""
+        """Returns dict of album key -> PhotoAlbum (see album_key())."""
         if self._albums is not None:
             return self._albums
 
         self._albums = {}
+        self._legacy_album_keys = {}
 
         # "All Photos" built-in
         self._albums["All Photos"] = PhotoAlbum(
@@ -521,54 +576,79 @@ class PhotosService:
                 "zoneID": self.ZONE_ID,
                 "resultsLimit": 500,
             })
-            parsed = []
-            for record in data.get("records", []):
-                rn = record.get("recordName", "")
-                if rn in _ROOT_FOLDER_NAMES:
-                    continue
-                fields = record.get("fields", {})
-                if fields.get("isDeleted", {}).get("value"):
-                    continue
-                raw_name = fields.get("albumNameEnc", {}).get("value", "")
-                name = _decode_b64_name(raw_name)
-                if not name:
-                    name = fields.get("albumName", {}).get("value", "")
-                if not name:
-                    continue
-                is_folder = fields.get("albumType", {}).get("value", 0) == 3
-                parent_rn = (fields.get("parentId", {}).get("value") or "")
-                parsed.append((rn, name, is_folder, parent_rn))
-
-            parent_paths = _build_parent_paths(parsed)
+            parsed = self._parse_album_records(data.get("records", []))
+            parent_paths = _build_parent_paths(
+                [(rn, name, is_folder, parent_rn)
+                 for rn, _, name, is_folder, parent_rn in parsed])
             folders = []
-            for rn, name, is_folder, parent_rn in parsed:
+            for rn, raw_name, name, is_folder, parent_rn in parsed:
                 parent_path = parent_paths.get(rn, "")
-                self._albums[name] = PhotoAlbum(
+                key = album_key(name, parent_path)
+                self._albums[key] = PhotoAlbum(
                     self, name, record_name=rn,
                     album_type="folder" if is_folder else "user",
                     parent_folder=parent_path or None,
                 )
+                self._legacy_album_keys[raw_name] = key
                 if is_folder:
-                    full_path = (parent_path + "/" + name) if parent_path else name
-                    folders.append((rn, full_path))
+                    folders.append((rn, key))
 
             # Fetch children that weren't in the initial bulk query
             # (some CloudKit zones only return root-level items).
             self._fetch_folder_children(
-                folders, self._albums, self.ZONE_ID, self._query)
+                folders, self._albums, self.ZONE_ID, self._query,
+                self._legacy_album_keys)
         except Exception:
             LOGGER.exception("Failed to fetch user albums")
+            # Incomplete — the one-time selection migration must not run
+            self._legacy_album_keys = None
 
         return self._albums
 
+    @staticmethod
+    def _parse_album_records(records):
+        """Parse CPLAlbumByPositionLive records into
+        (recordName, raw_name, unique_name, is_folder, parentId) tuples,
+        skipping root and deleted records. unique_name is the display name
+        made unique among its siblings (see _unique_sibling_names)."""
+        parsed = []
+        for record in records:
+            rn = record.get("recordName", "")
+            if rn in _ROOT_FOLDER_NAMES:
+                continue
+            fields = record.get("fields", {})
+            if fields.get("isDeleted", {}).get("value"):
+                continue
+            name = _decode_b64_name(
+                fields.get("albumNameEnc", {}).get("value", ""))
+            if not name:
+                name = fields.get("albumName", {}).get("value", "")
+            if not name:
+                continue
+            is_folder = fields.get("albumType", {}).get("value", 0) == 3
+            parent_rn = fields.get("parentId", {}).get("value") or ""
+            if parent_rn in _ROOT_FOLDER_NAMES:
+                parent_rn = ""
+            parsed.append((rn, name, is_folder, parent_rn,
+                           _record_created(record)))
+        unique = _unique_sibling_names(
+            [(rn, name, parent_rn, created)
+             for rn, name, _, parent_rn, created in parsed])
+        return [(rn, name, unique[rn], is_folder, parent_rn)
+                for rn, name, is_folder, parent_rn, _ in parsed]
+
     def _fetch_folder_children(self, folders, albums_dict, zone_id, query_fn,
-                               max_depth=5):
+                               legacy_keys, max_depth=5):
         """Recursively fetch sub-albums for folder albums.
 
         `folders` is a list of (recordName, parent_path) tuples.
         Discovered sub-folders are queued for the next depth level.
         """
         use_zone = zone_id if zone_id != self.ZONE_ID else None
+        # recordName -> key, so a record re-read here replaces its bulk
+        # entry even if the sibling set (and thus its " (n)" suffix) differs.
+        rn_keys = {a.record_name: k for k, a in albums_dict.items()
+                   if a.record_name}
         for depth in range(max_depth):
             if not folders:
                 break
@@ -588,30 +668,24 @@ class PhotosService:
                         "zoneID": zone_id,
                         "resultsLimit": 500,
                     })
-                    for record in child_data.get("records", []):
-                        rn = record.get("recordName", "")
-                        fields = record.get("fields", {})
-                        if fields.get("isDeleted", {}).get("value"):
-                            continue
-                        raw_name = fields.get("albumNameEnc", {}).get(
-                            "value", "")
-                        name = _decode_b64_name(raw_name)
-                        if not name:
-                            name = fields.get("albumName", {}).get(
-                                "value", "")
-                        if not name:
-                            continue
-                        is_folder = (fields.get("albumType", {})
-                                     .get("value", 0) == 3)
-                        albums_dict[name] = PhotoAlbum(
+                    parsed = self._parse_album_records(
+                        child_data.get("records", []))
+                    for rn, raw_name, name, is_folder, _ in parsed:
+                        key = album_key(name, parent_path)
+                        old_key = rn_keys.get(rn)
+                        if old_key and old_key != key:
+                            albums_dict.pop(old_key, None)
+                        albums_dict[key] = PhotoAlbum(
                             self, name, record_name=rn,
                             album_type="folder" if is_folder else "user",
                             parent_folder=parent_path,
                             zone_id=use_zone,
                         )
+                        rn_keys[rn] = key
+                        if legacy_keys is not None:
+                            legacy_keys[raw_name] = key
                         if is_folder:
-                            child_path = parent_path + "/" + name
-                            next_folders.append((rn, child_path))
+                            next_folders.append((rn, key))
                 except Exception:
                     LOGGER.exception(
                         "Failed to fetch sub-albums for folder %s",
@@ -624,6 +698,18 @@ class PhotosService:
         self._shared_albums = None
         self._shared_albums_error = None
         self._shared_library_albums = None
+
+    @property
+    def legacy_album_keys(self):
+        """Display name -> album key mapping for pre-#81 name keys."""
+        self.albums
+        return self._legacy_album_keys
+
+    @property
+    def legacy_shared_library_album_keys(self):
+        """Like legacy_album_keys, for the Shared Library zone."""
+        self.shared_library_albums
+        return self._legacy_shared_library_album_keys
 
     def _get_album_count(self, obj_type, zone_id=None):
         """Get photo count for an album by its obj_type."""
@@ -829,11 +915,12 @@ class PhotosService:
 
     @property
     def shared_library_albums(self):
-        """Returns dict of album name -> PhotoAlbum for the Shared Library zone."""
+        """Returns dict of album key -> PhotoAlbum for the Shared Library zone."""
         if self._shared_library_albums is not None:
             return self._shared_library_albums
 
         self._shared_library_albums = {}
+        self._legacy_shared_library_album_keys = {}
         zone_id = self._detect_shared_library_zone()
         if not zone_id:
             return self._shared_library_albums
@@ -858,40 +945,28 @@ class PhotosService:
                 "query": {"recordType": "CPLAlbumByPositionLive"},
                 "resultsLimit": 500,
             }, zone_id)
-            parsed = []
-            for record in data.get("records", []):
-                rn = record.get("recordName", "")
-                if rn in _ROOT_FOLDER_NAMES:
-                    continue
-                fields = record.get("fields", {})
-                if fields.get("isDeleted", {}).get("value"):
-                    continue
-                raw_name = fields.get("albumNameEnc", {}).get("value", "")
-                name = _decode_b64_name(raw_name)
-                if not name:
-                    name = fields.get("albumName", {}).get("value", "")
-                if not name:
-                    continue
-                is_folder = fields.get("albumType", {}).get("value", 0) == 3
-                parent_rn = (fields.get("parentId", {}).get("value") or "")
-                parsed.append((rn, name, is_folder, parent_rn))
-
-            parent_paths = _build_parent_paths(parsed)
-            for rn, name, is_folder, parent_rn in parsed:
+            parsed = self._parse_album_records(data.get("records", []))
+            parent_paths = _build_parent_paths(
+                [(rn, name, is_folder, parent_rn)
+                 for rn, _, name, is_folder, parent_rn in parsed])
+            for rn, raw_name, name, is_folder, parent_rn in parsed:
                 parent_path = parent_paths.get(rn, "")
-                self._shared_library_albums[name] = PhotoAlbum(
+                key = album_key(name, parent_path)
+                self._shared_library_albums[key] = PhotoAlbum(
                     self, name, record_name=rn, zone_id=zone_id,
                     album_type="folder" if is_folder else "user",
                     parent_folder=parent_path or None,
                 )
+                self._legacy_shared_library_album_keys[raw_name] = key
                 if is_folder:
-                    full_path = (parent_path + "/" + name) if parent_path else name
-                    folders.append((rn, full_path))
+                    folders.append((rn, key))
         except Exception:
             LOGGER.exception("Failed to fetch shared library user albums")
+            self._legacy_shared_library_album_keys = None
 
         self._fetch_folder_children(
-            folders, self._shared_library_albums, zone_id, self._query)
+            folders, self._shared_library_albums, zone_id, self._query,
+            self._legacy_shared_library_album_keys)
 
         return self._shared_library_albums
 

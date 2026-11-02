@@ -25,6 +25,29 @@ import heic_converter
 LOGGER = logging.getLogger("sync_engine")
 
 
+def migrate_album_keys(account_id, legacy_keys, selected=None, library=None):
+    """Move name-keyed album selections and manifest rows to path keys (#81).
+
+    `selected` (an in-memory copy of the selection) is updated as well.
+    """
+    try:
+        moved = config_manager.migrate_album_keys(
+            account_id, legacy_keys, library=library)
+    except Exception:
+        LOGGER.exception("Album key migration failed")
+        return {}
+    for old, new in moved.items():
+        if selected is not None and old in selected:
+            selected.setdefault(new, selected.pop(old))
+        try:
+            rows = sync_manifest.rename_album(account_id, old, new)
+        except Exception:
+            LOGGER.exception("Manifest migration failed for album %r", old)
+            rows = 0
+        LOGGER.info("Migrated album %r -> %r (%d manifest rows)", old, new, rows)
+    return moved
+
+
 def _remove_album_from_cache(account_id, album_name):
     """Remove a stale album from the album_cache.json."""
     try:
@@ -32,7 +55,7 @@ def _remove_album_from_cache(account_id, album_name):
         with open(cache_path, "r") as f:
             cache = json.load(f)
         changed = False
-        for key in ("counts", "types", "parents"):
+        for key in ("counts", "types", "parents", "names"):
             if album_name in cache.get(key, {}):
                 cache[key].pop(album_name)
                 changed = True
@@ -1022,6 +1045,8 @@ def _run_sync_locked(account_id):
 
         if sync_config.get("albums", {}).get("enabled", True):
             selected = sync_config.get("albums", {}).get("selected", {})
+            # Must run before _album_meta, which deselects unknown names.
+            migrate_album_keys(account_id, photos_svc.legacy_album_keys, selected)
             enabled_albums = [
                 name for name, en in selected.items()
                 if en and name != "All Photos"
@@ -1067,14 +1092,22 @@ def _run_sync_locked(account_id):
                     continue
                 if alb and alb.parent_folder:
                     parts = [_sanitize_path_component(p) for p in alb.parent_folder.split("/")]
-                    parts.append(_sanitize_path_component(name))
+                    parts.append(_sanitize_path_component(alb.name))
                     sub = os.path.join(*parts)
                 else:
-                    sub = _sanitize_path_component(name)
+                    sub = _sanitize_path_component(alb.name)
                 plan.append((name, "albums", sub, count, latest))
 
         if photos_svc.has_shared_library:
             sl_selected = sync_config.get("shared_library", {}).get("selected", {})
+            if any(n != "All Photos" for n in sl_selected):
+                try:
+                    migrate_album_keys(
+                        account_id,
+                        photos_svc.legacy_shared_library_album_keys,
+                        sl_selected, library="shared")
+                except Exception:
+                    LOGGER.exception("Failed to load shared library albums")
             # The Albums tab's Shared Library "All Photos" checkbox was
             # ignored — the whole shared library always synced (#71).
             # Unset means "never touched": keep syncing like before.
@@ -1101,10 +1134,10 @@ def _run_sync_locked(account_id):
                                 count = 0
                             if alb.parent_folder:
                                 parts = [_sanitize_path_component(p) for p in alb.parent_folder.split("/")]
-                                parts.append(_sanitize_path_component(name))
+                                parts.append(_sanitize_path_component(alb.name))
                                 sub = os.path.join(*parts)
                             else:
-                                sub = _sanitize_path_component(name)
+                                sub = _sanitize_path_component(alb.name)
                             plan.append((name, "shared_library_albums", sub, count, 0))
                 except Exception:
                     LOGGER.exception("Failed to plan shared library albums")

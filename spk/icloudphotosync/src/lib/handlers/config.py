@@ -367,6 +367,11 @@ def _reset_defaults(params):
     sl_selected = current.get("shared_library", {}).get("selected")
     if sl_selected:
         defaults.setdefault("shared_library", {})["selected"] = sl_selected
+    # Keep the album key migration marker with the selections it describes
+    for section in ("albums", "shared_library"):
+        version = current.get(section, {}).get("key_version")
+        if version:
+            defaults.setdefault(section, {})["key_version"] = version
     config_manager.save_sync_config(account_id, defaults)
     return {"success": True, "data": defaults}
 

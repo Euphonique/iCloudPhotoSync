@@ -12,6 +12,7 @@ Built with the [SynoCommunity/spksrc](https://github.com/SynoCommunity/spksrc) c
 - **Multi-account** — several Apple IDs side by side, each with its own settings
 - **Parallel downloads** — 1/2/4/8 configurable per account
 - **Folder structure** — year / year-month / year-month-day / flat
+- **Album folders** — Apple's folder tree is kept on disk and shown as a collapsible tree; a folder's checkbox selects every album below it
 - **HEIC / JPG conversion** — keep originals, convert, or both
 - **Live Photos** — optionally save the video part as `.MOV` next to the photo (same name, as Synology Photos and Apple's export expect)
 - **Apple 2FA** via trusted-device push or SMS fallback

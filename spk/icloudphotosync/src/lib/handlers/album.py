@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 import config_manager
 import icloud_client
+import sync_engine
 
 logger = logging.getLogger(__name__)
 
@@ -117,13 +118,15 @@ def _cached_albums(params):
 
     album_types = cache.get("types", {})
     cached_parents = cache.get("parents", {})
+    cached_names = cache.get("names", {})
 
     personal_list = []
     shared_library_list = []
 
     for name, count in counts.items():
         is_sl = name.startswith("sl:")
-        display_name = name[3:] if is_sl else name
+        key = name[3:] if is_sl else name
+        display_name = cached_names.get(name, key)
 
         cached_type = album_types.get(name)
         if cached_type:
@@ -140,7 +143,7 @@ def _cached_albums(params):
             continue
 
         entry = {
-            "name": display_name, "type": atype, "photo_count": count,
+            "key": key, "name": display_name, "type": atype, "photo_count": count,
             "parent_folder": cached_parents.get(name),
         }
 
@@ -205,16 +208,25 @@ def _list_albums(params):
         albums = photos_svc.albums
 
         # Personal library albums
+        # Albums are keyed by folder path since #81; rewrite selections
+        # still stored under a bare display name before the UI reads them.
+        migrated = bool(sync_engine.migrate_album_keys(
+            account_id, photos_svc.legacy_album_keys))
+
         album_list = []
         cached_parents = {}
-        for name, album in albums.items():
+        cached_names = {}
+        for key, album in albums.items():
             parent = getattr(album, "parent_folder", None)
             if parent:
-                cached_parents[name] = parent
+                cached_parents[key] = parent
+            if album.name != key:
+                cached_names[key] = album.name
             album_list.append({
-                "name": name,
+                "key": key,
+                "name": album.name,
                 "type": album.album_type,
-                "photo_count": cached_counts.get(name, -1),
+                "photo_count": cached_counts.get(key, -1),
                 "parent_folder": parent,
             })
         album_list.sort(key=_album_sort_key)
@@ -222,19 +234,29 @@ def _list_albums(params):
         # Shared Library albums (iOS 16+ family sharing)
         shared_library_list = []
         has_shared_library = False
+        sl_albums = {}
+        sl_failed = False
         try:
             has_shared_library = photos_svc.has_shared_library
             if has_shared_library:
                 sl_albums = photos_svc.shared_library_albums
-                for name, album in sl_albums.items():
-                    count = cached_counts.get("sl:" + name, -1)
-                    if name != "All Photos" and count == 0:
+                if sync_engine.migrate_album_keys(
+                        account_id,
+                        photos_svc.legacy_shared_library_album_keys,
+                        library="shared"):
+                    migrated = True
+                for key, album in sl_albums.items():
+                    count = cached_counts.get("sl:" + key, -1)
+                    if key != "All Photos" and count == 0:
                         continue
                     parent = getattr(album, "parent_folder", None)
                     if parent:
-                        cached_parents["sl:" + name] = parent
+                        cached_parents["sl:" + key] = parent
+                    if album.name != key:
+                        cached_names["sl:" + key] = album.name
                     shared_library_list.append({
-                        "name": name,
+                        "key": key,
+                        "name": album.name,
                         "type": album.album_type,
                         "photo_count": count,
                         "parent_folder": parent,
@@ -243,28 +265,44 @@ def _list_albums(params):
                 shared_library_list.sort(key=_album_sort_key)
         except Exception as exc:
             logger.error("Failed to list shared library albums: %s", exc, exc_info=True)
+            sl_failed = True
 
         # Persist parent relationships, types, and shared library status in cache
         cache["has_shared_library"] = has_shared_library
-        if cached_parents:
-            cache["parents"] = cached_parents
-        # Clean stale entries from cache
-        for key in list(cache.get("counts", {}).keys()):
-            if key.startswith("SharedSync-"):
-                cache["counts"].pop(key, None)
-                cache.get("types", {}).pop(key, None)
+        if sl_failed:
+            # Keep the last known shared library tree
+            for field, fresh in (("parents", cached_parents), ("names", cached_names)):
+                for k, v in cache.get(field, {}).items():
+                    if k.startswith("sl:"):
+                        fresh.setdefault(k, v)
+        cache["parents"] = cached_parents
+        cache["names"] = cached_names
         album_types = cache.setdefault("types", {})
         counts = cache.setdefault("counts", {})
         # Every album gets a cache row (-1 = count not loaded yet, rendered
         # as "…"). Rows used to appear only once a count had loaded, so a
         # timed-out count pass left the cached tree permanently incomplete
         # (#81).
+        live_keys = set()
         for a in album_list:
-            album_types[a["name"]] = a["type"]
-            counts.setdefault(a["name"], 0 if a["type"] == "folder" else -1)
+            live_keys.add(a["key"])
+            album_types[a["key"]] = a["type"]
+            counts.setdefault(a["key"], 0 if a["type"] == "folder" else -1)
         for a in shared_library_list:
-            album_types["sl:" + a["name"]] = a["type"]
-            counts.setdefault("sl:" + a["name"], 0 if a["type"] == "folder" else -1)
+            live_keys.add("sl:" + a["key"])
+            album_types["sl:" + a["key"]] = a["type"]
+            counts.setdefault("sl:" + a["key"], 0 if a["type"] == "folder" else -1)
+        # Drop rows of albums that no longer exist — including the old
+        # name-keyed rows of nested albums, which would otherwise show up
+        # twice in the cached tree. Shared library rows hidden for having
+        # 0 photos are kept so their count isn't re-fetched.
+        for key in list(counts):
+            if key in live_keys:
+                continue
+            if key.startswith("sl:") and (sl_failed or key[3:] in sl_albums):
+                continue
+            counts.pop(key, None)
+            album_types.pop(key, None)
         _save_cache(account_id, cache)
 
         cache_age = int(time.time()) - cache.get("updated", 0)
@@ -275,6 +313,8 @@ def _list_albums(params):
             "albums": album_list,
             "cache_age": cache_age,
             "has_shared_library": has_shared_library,
+            # Selections were rewritten — the UI must reload the config
+            "selection_migrated": migrated,
         }
         if has_shared_library:
             result["libraries"].append({

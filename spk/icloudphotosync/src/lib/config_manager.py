@@ -408,3 +408,37 @@ def set_album_sync(account_id, album_name, enabled, library=None):
     return config
 
 
+ALBUM_KEY_VERSION = 2
+
+
+def migrate_album_keys(account_id, legacy_keys, library=None):
+    """Rewrite album selections stored by display name to album keys (#81).
+
+    `legacy_keys` maps a display name to the key it used to resolve to, or
+    is None if the album list could not be fetched. Runs once per library:
+    afterwards a plain name is a valid key of its own (e.g. the older of
+    two same-named albums) and must not be rewritten again.
+    Returns {old_name: new_key} for every rewritten entry.
+    """
+    if legacy_keys is None:
+        return {}
+    with _locked(_sync_config_path(account_id) + ".lock"):
+        config = get_sync_config(account_id)
+        section = config.setdefault(
+            "shared_library" if library == "shared" else "albums", {})
+        if section.get("key_version", 1) >= ALBUM_KEY_VERSION:
+            return {}
+        selected = section.setdefault("selected", {})
+        moved = {}
+        for name in list(selected):
+            key = legacy_keys.get(name)
+            if not key or key == name:
+                continue
+            enabled = selected.pop(name)
+            selected.setdefault(key, enabled)
+            moved[name] = key
+        section["key_version"] = ALBUM_KEY_VERSION
+        save_sync_config(account_id, config)
+    return moved
+
+

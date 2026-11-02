@@ -188,6 +188,22 @@ def remove_album(account_id, album):
         conn.close()
 
 
+def rename_album(account_id, old, new):
+    """Move an album's sync records to a new album key, unless the new key
+    already has records. Returns the number of moved rows."""
+    conn = _connect(account_id)
+    try:
+        if conn.execute("SELECT 1 FROM synced_photos WHERE album=? LIMIT 1",
+                        (new,)).fetchone():
+            return 0
+        cur = conn.execute("UPDATE synced_photos SET album=? WHERE album=?",
+                           (new, old))
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
 def all_rows(account_id):
     """Return all synced rows for an account, ordered so duplicate inodes
     (hardlinks) are seen in a stable order. local_path sort groups paths

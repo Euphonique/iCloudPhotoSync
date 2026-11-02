@@ -1425,10 +1425,18 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
         // Structured data from API: { libraries: [...] }
         this._treeData = { libraries: [] };
         this._collapsedLibraries = {};
+        // Folders start collapsed so large libraries stay navigable (#54);
+        // expanded ones are remembered per browser.
+        this._expandedFolders = {};
+        try {
+            this._expandedFolders = JSON.parse(window.localStorage.getItem("icps.expandedFolders") || "{}") || {};
+        } catch (e) {}
 
-        // Album list store — flat rows including library_header separators
+        // Album list store — flat rows including library_header separators.
+        // "key" identifies an album (folder path + name, #81); "name" is
+        // only the display name and repeats across folders.
         this.albumStore = new Ext.data.JsonStore({
-            fields: ["name", "type", "photo_count", "parent_folder", "library", {name: "sync_enabled", type: "boolean", defaultValue: false}],
+            fields: ["key", "name", "type", "photo_count", "parent_folder", "library", {name: "sync_enabled", type: "boolean", defaultValue: false}],
             data: []
         });
 
@@ -1472,6 +1480,10 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
                         var parentFolder = record.get("parent_folder") || "";
                         var depth = parentFolder ? parentFolder.split("/").length : 0;
                         var icon = type === "shared" ? "👥" : type === "smart" ? "☆" : "📁";
+                        if (type === "folder") {
+                            var expanded = self._isFolderExpanded(record.get("library"), self._folderPath(record));
+                            icon = '<span class="ics-library-arrow' + (expanded ? "" : " collapsed") + '">▼</span>' + icon;
+                        }
                         var count = record.get("photo_count");
                         var countStr = type === "folder" ? ""
                             : (count < 0) ? '<span style="color: #ccc;">…</span>'
@@ -1506,13 +1518,17 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
                         var newVal = !record.get("sync_enabled");
                         record.set("sync_enabled", newVal);
                         record.commit();
-                        self._toggleAlbumSync(record.get("name"), newVal, record.get("type"), record.get("library"));
+                        self._setAlbumSyncEnabled(record.get("key"), record.get("library"), newVal);
+                        self._toggleAlbumSync(record.get("key"), newVal, record.get("type"), record.get("library"));
                         self._refreshFolderCheckboxes(record.get("parent_folder"), record.get("library"));
                     } else {
-                        if (record.get("type") === "folder") return;
-                        self._selectedAlbum = record.get("name");
+                        if (record.get("type") === "folder") {
+                            self._toggleFolderExpanded(record.get("library"), self._folderPath(record));
+                            return;
+                        }
+                        self._selectedAlbum = record.get("key");
                         self._selectedLibrary = record.get("library");
-                        self.loadPhotos(record.get("name"), record.get("library"));
+                        self.loadPhotos(record.get("key"), record.get("library"));
                     }
                 }
             }
@@ -1705,10 +1721,12 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
                 var albums = lib.albums || [];
                 for (var i = 0; i < albums.length; i++) {
                     var a = albums[i];
+                    if (!this._isFolderVisible(lib.id, a.parent_folder || "")) continue;
+                    var key = a.key || a.name;
                     rows.push({
-                        name: a.name, type: a.type, photo_count: a.photo_count,
+                        key: key, name: a.name, type: a.type, photo_count: a.photo_count,
                         parent_folder: a.parent_folder || "", library: lib.id,
-                        sync_enabled: this._isAlbumSyncEnabled(a.name, lib.id)
+                        sync_enabled: this._isAlbumSyncEnabled(key, lib.id)
                     });
                 }
             }
@@ -1748,9 +1766,40 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
         }
     },
 
-    _updateStoreCount: function (albumName, libraryId, count) {
+    // ── Folder expand/collapse (#54) ────────────────────────────────
+
+    _isFolderExpanded: function (libraryId, folderPath) {
+        return !!this._expandedFolders[libraryId + "|" + folderPath];
+    },
+
+    // A row is shown only if every folder above it is expanded.
+    _isFolderVisible: function (libraryId, parentFolder) {
+        if (!parentFolder) return true;
+        var parts = parentFolder.split("/");
+        var path = "";
+        for (var i = 0; i < parts.length; i++) {
+            path = path ? path + "/" + parts[i] : parts[i];
+            if (!this._isFolderExpanded(libraryId, path)) return false;
+        }
+        return true;
+    },
+
+    _toggleFolderExpanded: function (libraryId, folderPath) {
+        var k = libraryId + "|" + folderPath;
+        if (this._expandedFolders[k]) {
+            delete this._expandedFolders[k];
+        } else {
+            this._expandedFolders[k] = true;
+        }
+        try {
+            window.localStorage.setItem("icps.expandedFolders", JSON.stringify(this._expandedFolders));
+        } catch (e) {}
+        this._refreshGrid();
+    },
+
+    _updateStoreCount: function (albumKey, libraryId, count) {
         var idx = this.albumStore.findBy(function (r) {
-            return r.get("name") === albumName && r.get("library") === libraryId && r.get("type") !== "library_header";
+            return r.get("key") === albumKey && r.get("library") === libraryId && r.get("type") !== "library_header";
         });
         if (idx >= 0) {
             this.albumStore.getAt(idx).set("photo_count", count);
@@ -1759,22 +1808,38 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
     },
 
     _folderPath: function (record) {
+        if (record.get("key")) return record.get("key");
         var parent = record.get("parent_folder") || "";
         return parent ? parent + "/" + record.get("name") : record.get("name");
+    },
+
+    // Albums anywhere below a folder, including sub-folders. Works on the
+    // tree data, not the store — collapsed rows are not in the store.
+    _folderAlbums: function (folderPath, libraryId) {
+        var albums = this._getLibraryAlbums(libraryId);
+        var prefix = folderPath + "/";
+        var result = [];
+        for (var i = 0; i < albums.length; i++) {
+            var parent = albums[i].parent_folder || "";
+            if (albums[i].type !== "folder" &&
+                (parent === folderPath || parent.indexOf(prefix) === 0)) {
+                result.push(albums[i]);
+            }
+        }
+        return result;
     },
 
     _toggleFolderSync: function (folderPath, libraryId) {
         var state = this._getFolderCheckState(folderPath, libraryId);
         var newVal = state !== "all";
-        this.albumStore.each(function (record) {
-            if (record.get("parent_folder") === folderPath && record.get("library") === libraryId && record.get("type") !== "folder") {
-                record.set("sync_enabled", newVal);
-                record.commit();
-                this._setAlbumSyncEnabled(record.get("name"), libraryId, newVal);
-                this._toggleAlbumSync(record.get("name"), newVal, record.get("type"), libraryId);
-            }
-        }, this);
-        this._refreshFolderCheckboxes(folderPath, libraryId);
+        var albums = this._folderAlbums(folderPath, libraryId);
+        for (var i = 0; i < albums.length; i++) {
+            var key = albums[i].key || albums[i].name;
+            if (this._isAlbumSyncEnabled(key, libraryId) === newVal) continue;
+            this._setAlbumSyncEnabled(key, libraryId, newVal);
+            this._toggleAlbumSync(key, newVal, albums[i].type, libraryId);
+        }
+        this._refreshGrid();
     },
 
     _refreshFolderCheckboxes: function (folderPath, libraryId) {
@@ -1794,13 +1859,10 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
     },
 
     _getFolderCheckState: function (folderPath, libraryId) {
-        var albums = this._getLibraryAlbums(libraryId);
-        var total = 0, enabled = 0;
+        var albums = this._folderAlbums(folderPath, libraryId);
+        var total = albums.length, enabled = 0;
         for (var i = 0; i < albums.length; i++) {
-            if (albums[i].parent_folder === folderPath && albums[i].type !== "folder") {
-                total++;
-                if (this._isAlbumSyncEnabled(albums[i].name, libraryId)) enabled++;
-            }
+            if (this._isAlbumSyncEnabled(albums[i].key || albums[i].name, libraryId)) enabled++;
         }
         if (total === 0 || enabled === 0) return "none";
         if (enabled === total) return "all";
@@ -1922,6 +1984,18 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
             if (success && data.libraries) {
                 self._treeData = { libraries: data.libraries };
                 self._applySyncConfig();
+                if (data.selection_migrated) {
+                    // Server moved name-keyed selections to path keys (#81)
+                    self.appWin.apiRequest("config", {
+                        action: "get",
+                        account_id: accountId
+                    }, function (ok, cfg) {
+                        if (ok && cfg) {
+                            self.syncConfig = cfg;
+                            self._applySyncConfig();
+                        }
+                    });
+                }
                 if (!hadCache) {
                     var totalAlbums = (data.albums || []).length;
                     self.photoPanel.body.update(
@@ -1973,7 +2047,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
                 var libAlbums = libs[li].albums || [];
                 for (var ai = 0; ai < libAlbums.length; ai++) {
                     if (libAlbums[ai].type !== "folder") {
-                        this._countQueue.push({ name: libAlbums[ai].name, library: libs[li].id, _ref: libAlbums[ai] });
+                        this._countQueue.push({ name: libAlbums[ai].key || libAlbums[ai].name, library: libs[li].id, _ref: libAlbums[ai] });
                     }
                 }
             }
@@ -2329,7 +2403,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
 
         // Find album metadata for lazy-load strategy.
         var idx = this.albumStore.findBy(function (r) {
-            return r.get("name") === albumName && r.get("library") === libraryId && r.get("type") !== "library_header";
+            return r.get("key") === albumName && r.get("library") === libraryId && r.get("type") !== "library_header";
         });
         var rec = idx >= 0 ? this.albumStore.getAt(idx) : null;
         var albumType = rec ? rec.get("type") : "user";
