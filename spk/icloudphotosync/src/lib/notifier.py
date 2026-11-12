@@ -131,9 +131,10 @@ def _load_texts(lang):
 
 def render(title_key, msg_key, args=None):
     """Resolve a notification title/message in the DSM mail language."""
-    texts = _load_texts(_dsm_language())
-    if not texts:
-        texts = _load_texts("enu")
+    # English underneath: a translation that lags behind still yields text,
+    # not the raw key.
+    texts = _load_texts("enu")
+    texts.update(_load_texts(_dsm_language()))
     args = [str(a) for a in (args or [])]
 
     def fill(text):
