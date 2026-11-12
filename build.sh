@@ -60,9 +60,13 @@ fi
 mkdir -p "$STAGE/app"
 cp "$SRC_DIR"/app/api.cgi "$STAGE/app/"
 chmod 755 "$STAGE/app/api.cgi"
-cp "$SRC_DIR"/app/config "$STAGE/app/"
 cp "$SRC_DIR"/app/index.html "$STAGE/app/"
-cp "$SRC_DIR"/app/iCloudPhotoSync.js "$STAGE/app/"
+# DSM loads the app as <name>.js?v=<DSM build>, so the URL never changes
+# across package updates and browsers keep running the old UI. A versioned
+# file name forces a fresh download after every update.
+APP_JS="iCloudPhotoSync-${PKG_VER}.js"
+cp "$SRC_DIR"/app/iCloudPhotoSync.js "$STAGE/app/$APP_JS"
+sed "s/\"iCloudPhotoSync\.js\"/\"$APP_JS\"/" "$SRC_DIR"/app/config > "$STAGE/app/config"
 cp -R "$SRC_DIR/app/images" "$STAGE/app/"
 cp -R "$SRC_DIR/app/texts" "$STAGE/app/"
 
