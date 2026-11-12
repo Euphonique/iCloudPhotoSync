@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 import config_manager
+import log_utils
 
 
 def handle(params):
@@ -51,10 +52,14 @@ def _parse_log_lines(log_dir):
             continue
         try:
             with open(path, "r", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
+                # Traceback frames and multi-line bodies stay with their
+                # header line instead of showing up as separate entries.
+                for _ts, block in log_utils.split_entries(f):
+                    lines = [ln.rstrip() for ln in block if ln.strip()]
+                    if not lines:
                         continue
+                    line = lines[0].strip()
+                    extra = lines[1:]
 
                     level = "info"
                     timestamp = ""
@@ -71,15 +76,19 @@ def _parse_log_lines(log_dir):
                         if m2:
                             timestamp = m2.group(1)
                             message = m2.group(2)
-                        if "error" in line.lower():
+                        text = "\n".join(lines).lower()
+                        if "error" in text:
                             level = "error"
-                        elif "warn" in line.lower():
+                        elif "warn" in text:
                             level = "warning"
+
+                    if extra:
+                        message = "\n".join([message] + extra)
 
                     records.append({
                         "level": level,
                         "timestamp": timestamp,
-                        "message": message
+                        "message": log_utils.redact(message)
                     })
         except Exception:
             continue
@@ -188,30 +197,14 @@ def _do_trim(days):
     """Remove log lines older than `days` from all log files. Returns count of removed lines."""
     cutoff = datetime.now() - timedelta(days=days)
     cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
-    log_dir = os.path.join(config_manager.PKG_VAR, "logs")
     total_removed = 0
 
-    for lf in ["sync.log", "cron.log"]:
-        path = os.path.join(log_dir, lf)
+    for lf in log_utils.LOG_FILES:
+        path = os.path.join(log_utils.LOG_DIR, lf)
         if not os.path.isfile(path):
             continue
         try:
-            with open(path, "r", errors="replace") as f:
-                lines = f.readlines()
-
-            kept = []
-            for line in lines:
-                m = re.match(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})", line)
-                if m and m.group(1) < cutoff_str:
-                    total_removed += 1
-                else:
-                    kept.append(line)
-
-            if total_removed > 0:
-                tmp = path + ".tmp"
-                with open(tmp, "w") as f:
-                    f.writelines(kept)
-                os.replace(tmp, path)
+            total_removed += log_utils.trim_file(path, cutoff_str)
         except Exception:
             pass
 

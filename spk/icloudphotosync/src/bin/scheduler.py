@@ -52,6 +52,7 @@ if os.path.isdir(VENDOR_DIR):
 
 try:
     import config_manager
+    import log_utils
     import notifier
     import sync_engine
 except Exception as _e:
@@ -64,27 +65,14 @@ except Exception as _e:
 SESSION_LIFETIME_DAYS = 60
 EXPIRY_WARN_DAYS = 14
 
-LOG_DIR = os.path.join(config_manager.PKG_VAR, "logs")
-os.makedirs(LOG_DIR, exist_ok=True)
-
 # Dedicated scheduler.log for scheduling decisions, and sync.log for the
 # actual sync runs (same file the manual sync_runner writes to). Without
 # this split, in-process sync threads would dump into scheduler.log and the
 # UI's "view sync log" would appear empty during scheduled runs.
-_fmt = logging.Formatter(
-    "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-_log_level_name = config_manager.load_config().get("log_level", "INFO").upper()
-_log_level = getattr(logging, _log_level_name, logging.INFO)
+logging.getLogger().addHandler(log_utils.file_handler("sync.log"))
+logging.getLogger().setLevel(log_utils.configured_level())
 
-_sync_handler = logging.FileHandler(os.path.join(LOG_DIR, "sync.log"))
-_sync_handler.setFormatter(_fmt)
-logging.getLogger().addHandler(_sync_handler)
-logging.getLogger().setLevel(_log_level)
-
-_sched_handler = logging.FileHandler(os.path.join(LOG_DIR, "scheduler.log"))
-_sched_handler.setFormatter(_fmt)
+_sched_handler = log_utils.file_handler("scheduler.log")
 LOGGER = logging.getLogger("scheduler")
 LOGGER.addHandler(_sched_handler)
 LOGGER.propagate = False  # keep scheduler chatter out of sync.log
@@ -151,7 +139,7 @@ def _mark_ran(account_id):
 
 
 def _check_auth_notifications(acc):
-    """Push DSM notifications about auth state. Throttled per kind."""
+    """Notify about auth state on all channels. Throttled per kind."""
     account_id = acc["id"]
     apple_id = acc.get("apple_id", "")
     status = acc.get("status")
@@ -162,6 +150,7 @@ def _check_auth_notifications(acc):
             "reauth_title", "reauth_msg",
             args=[apple_id],
             throttle_hours=24,
+            apple_id=apple_id,
         )
         return
 
@@ -179,6 +168,7 @@ def _check_auth_notifications(acc):
             "expiring_title", "expiring_msg",
             args=[apple_id, max(int(days_left), 0)],
             throttle_hours=24 * 7,
+            apple_id=apple_id,
         )
 
 

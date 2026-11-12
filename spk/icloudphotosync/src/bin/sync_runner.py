@@ -38,22 +38,13 @@ if hasattr(os, "geteuid") and os.geteuid() == 0:
     sys.exit(0)
 
 import config_manager
+import log_utils
 import sync_engine
 
-# Setup logging
-LOG_DIR = os.path.join(config_manager.PKG_VAR, "logs")
-os.makedirs(LOG_DIR, exist_ok=True)
-LOG_FILE = os.path.join(LOG_DIR, "sync.log")
-
-# Read log level from config (default: INFO for production)
-_log_level_name = config_manager.load_config().get("log_level", "INFO").upper()
-_log_level = getattr(logging, _log_level_name, logging.INFO)
-
+# Setup logging (level from config, default: INFO for production)
 logging.basicConfig(
-    filename=LOG_FILE,
-    level=_log_level,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[log_utils.file_handler("sync.log")],
+    level=log_utils.configured_level(),
 )
 LOGGER = logging.getLogger("sync_runner")
 

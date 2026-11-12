@@ -340,6 +340,42 @@ def clear_pending_password(account_id):
         pass
 
 
+# --- Persistent secrets in config.json (e.g. SMTP password) ---
+# Same scheme as the pending password, keyed by a label instead of an
+# account id. Not a vault: anyone with root and the machine id can decrypt,
+# but config.json alone (backups, copies) does not reveal the secret.
+
+def encrypt_secret(label, plaintext):
+    import base64
+    salt = os.urandom(_SALT_LEN)
+    enc_key, hmac_key = _derive_keys("secret:" + label, salt)
+    ciphertext = _keystream_encrypt(plaintext.encode("utf-8"), enc_key)
+    mac = hmac.new(hmac_key, salt + ciphertext, "sha256").digest()
+    return base64.b64encode(salt + mac + ciphertext).decode("ascii")
+
+
+def decrypt_secret(label, token):
+    """Inverse of encrypt_secret; None if missing, corrupt or foreign."""
+    import base64
+    try:
+        blob = base64.b64decode(token or "")
+    except (ValueError, TypeError):
+        return None
+    if len(blob) < _SALT_LEN + _HMAC_LEN + 1:
+        return None
+    salt = blob[:_SALT_LEN]
+    stored_mac = blob[_SALT_LEN:_SALT_LEN + _HMAC_LEN]
+    ciphertext = blob[_SALT_LEN + _HMAC_LEN:]
+    enc_key, hmac_key = _derive_keys("secret:" + label, salt)
+    expected_mac = hmac.new(hmac_key, salt + ciphertext, "sha256").digest()
+    if not hmac.compare_digest(stored_mac, expected_mac):
+        return None
+    try:
+        return _keystream_encrypt(ciphertext, enc_key).decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
 # --- Per-account sync configuration ---
 
 def _sync_config_path(account_id):

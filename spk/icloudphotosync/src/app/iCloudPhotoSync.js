@@ -550,6 +550,10 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.DetailPanel", {
             appWin: config.appWin
         });
 
+        this.notifyTab = new SYNO.SDS.iCloudPhotoSync.NotificationSettings({
+            appWin: config.appWin
+        });
+
         this.logTab = new SYNO.SDS.iCloudPhotoSync.LogViewer({
             appWin: config.appWin
         });
@@ -569,6 +573,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.DetailPanel", {
                 this.overviewTab,
                 this.albumTab,
                 this.settingsTab,
+                this.notifyTab,
                 this.logTab,
                 this.aboutTab
             ],
@@ -3199,6 +3204,200 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
 });
 
 // --- Log Viewer (Placeholder) ---
+// --- Notifications Tab (global: email / webhook, #89) ---
+// DSM cannot email 3rd-party notifications, so the app brings its own SMTP
+// and webhook settings. They apply to all accounts.
+Ext.define("SYNO.SDS.iCloudPhotoSync.NotificationSettings", {
+    extend: "Ext.Panel",
+
+    constructor: function (config) {
+        var self = this;
+        var T = SYNO.SDS.iCloudPhotoSync._T;
+
+        this.saveBtn = new SYNO.ux.Button({
+            text: T("common:save"),
+            btnStyle: "blue",
+            handler: function () { self.saveSettings(); }
+        });
+
+        this.form = new SYNO.ux.FormPanel({
+            border: false,
+            autoScroll: true,
+            bodyStyle: "padding: 20px; background: #fff;",
+            labelWidth: 140,
+            defaults: { anchor: "100%" },
+            items: [
+                { xtype: "displayfield", hideLabel: true,
+                  value: '<div style="font-size: 13px; color: #555; margin-bottom: 12px;">' + T("notify:intro") + '</div>' },
+                { xtype: "syno_fieldset", title: T("notify:section_email"), defaults: { anchor: "100%" }, items: [
+                    { xtype: "syno_checkbox", fieldLabel: " ", labelSeparator: "", name: "email_enabled",
+                      boxLabel: T("notify:checkbox_email") },
+                    { xtype: "syno_textfield", fieldLabel: T("notify:label_host"), name: "smtp_host",
+                      emptyText: "smtp.example.com" },
+                    { xtype: "syno_numberfield", fieldLabel: T("notify:label_port"), name: "smtp_port",
+                      minValue: 1, maxValue: 65535, allowDecimals: false, value: 587, width: 80, anchor: "" },
+                    { xtype: "syno_combobox", fieldLabel: T("notify:label_security"), name: "smtp_security",
+                      store: new Ext.data.ArrayStore({ fields: ["val", "label"], data: [
+                          ["starttls", T("notify:security_starttls")],
+                          ["ssl", T("notify:security_ssl")],
+                          ["none", T("notify:security_none")]
+                      ]}),
+                      displayField: "label", valueField: "val",
+                      mode: "local", triggerAction: "all", editable: false,
+                      value: "starttls",
+                      listeners: {
+                          select: function (combo, record) {
+                              var port = self._field("smtp_port");
+                              var v = record.get("val");
+                              if (port) port.setValue(v === "ssl" ? 465 : (v === "none" ? 25 : 587));
+                          }
+                      } },
+                    { xtype: "syno_textfield", fieldLabel: T("notify:label_username"), name: "smtp_username" },
+                    { xtype: "syno_textfield", fieldLabel: T("notify:label_password"), name: "smtp_password",
+                      inputType: "password" },
+                    { xtype: "syno_textfield", fieldLabel: T("notify:label_sender"), name: "smtp_sender",
+                      emptyText: T("notify:placeholder_sender") },
+                    { xtype: "syno_textfield", fieldLabel: T("notify:label_recipients"), name: "smtp_recipients",
+                      emptyText: T("notify:placeholder_recipients") },
+                    { xtype: "container", style: "margin: 4px 0 0 145px;", items: [
+                        new SYNO.ux.Button({
+                            text: T("notify:btn_test_email"),
+                            handler: function () { self.sendTest("email", this); }
+                        })
+                    ]}
+                ]},
+                { xtype: "syno_fieldset", title: T("notify:section_webhook"), defaults: { anchor: "100%" }, items: [
+                    { xtype: "syno_checkbox", fieldLabel: " ", labelSeparator: "", name: "webhook_enabled",
+                      boxLabel: T("notify:checkbox_webhook") },
+                    { xtype: "syno_combobox", fieldLabel: T("notify:label_format"), name: "webhook_format",
+                      store: new Ext.data.ArrayStore({ fields: ["val", "label"], data: [
+                          ["json", T("notify:format_json")],
+                          ["ntfy", T("notify:format_ntfy")],
+                          ["discord", T("notify:format_discord")]
+                      ]}),
+                      displayField: "label", valueField: "val",
+                      mode: "local", triggerAction: "all", editable: false,
+                      value: "json" },
+                    { xtype: "syno_textfield", fieldLabel: T("notify:label_url"), name: "webhook_url",
+                      emptyText: T("notify:placeholder_url") },
+                    { xtype: "displayfield", hideLabel: true,
+                      value: '<div style="font-size: 11px; color: #888; margin: 2px 0 0 145px;">' + T("notify:help_webhook") + '</div>' },
+                    { xtype: "container", style: "margin: 4px 0 0 145px;", items: [
+                        new SYNO.ux.Button({
+                            text: T("notify:btn_test_webhook"),
+                            handler: function () { self.sendTest("webhook", this); }
+                        })
+                    ]}
+                ]}
+            ],
+            fbar: { items: [this.saveBtn] }
+        });
+
+        var cfg = Ext.apply({
+            title: T("notify:tab"),
+            layout: "fit",
+            border: false,
+            items: [this.form],
+            listeners: {
+                activate: function () { self.loadSettings(); }
+            }
+        }, config);
+
+        delete cfg.appWin;
+        this.appWin = config.appWin;
+        this.callParent([cfg]);
+    },
+
+    _field: function (name) {
+        return this.form.getForm().findField(name);
+    },
+
+    loadSettings: function () {
+        var self = this;
+        this.appWin.apiRequest("notify", { action: "get" }, function (success, data) {
+            if (!success || !data || !data.email) return;
+            self._apply(data);
+        });
+    },
+
+    _apply: function (data) {
+        var f = this._field.bind(this);
+        var email = data.email, webhook = data.webhook || {};
+        f("email_enabled").setValue(!!email.enabled);
+        f("smtp_host").setValue(email.host || "");
+        f("smtp_port").setValue(email.port || 587);
+        f("smtp_security").setValue(email.security || "starttls");
+        f("smtp_username").setValue(email.username || "");
+        f("smtp_password").setValue("");
+        var pw = f("smtp_password");
+        pw.emptyText = email.has_password ? SYNO.SDS.iCloudPhotoSync._T("notify:placeholder_password_saved") : "";
+        pw.applyEmptyText();
+        f("smtp_sender").setValue(email.sender || "");
+        f("smtp_recipients").setValue(email.recipients || "");
+        f("webhook_enabled").setValue(!!webhook.enabled);
+        f("webhook_format").setValue(webhook.format || "json");
+        f("webhook_url").setValue(webhook.url || "");
+    },
+
+    _collect: function () {
+        var f = this._field.bind(this);
+        return {
+            email: {
+                enabled: f("email_enabled").getValue(),
+                host: f("smtp_host").getValue(),
+                port: parseInt(f("smtp_port").getValue(), 10) || 0,
+                security: f("smtp_security").getValue(),
+                username: f("smtp_username").getValue(),
+                password: f("smtp_password").getValue(),
+                sender: f("smtp_sender").getValue(),
+                recipients: f("smtp_recipients").getValue()
+            },
+            webhook: {
+                enabled: f("webhook_enabled").getValue(),
+                format: f("webhook_format").getValue(),
+                url: f("webhook_url").getValue()
+            }
+        };
+    },
+
+    saveSettings: function () {
+        var self = this;
+        var T = SYNO.SDS.iCloudPhotoSync._T;
+        this.saveBtn.setDisabled(true);
+        this.appWin.apiRequest("notify", {
+            action: "set",
+            settings: Ext.encode(this._collect())
+        }, function (success, data, errMsg) {
+            self.saveBtn.setDisabled(false);
+            if (!success) {
+                SYNO.SDS.iCloudPhotoSync._showMsg(T("overview:status_error"),
+                    Ext.util.Format.htmlEncode(errMsg || T("settings:error_save_failed")), "error");
+                return;
+            }
+            self._apply(data);
+            SYNO.SDS.iCloudPhotoSync._showMsg(T("notify:tab"), T("notify:msg_saved"), "info");
+        }, true);
+    },
+
+    sendTest: function (channel, btn) {
+        var T = SYNO.SDS.iCloudPhotoSync._T;
+        if (btn && btn.setDisabled) btn.setDisabled(true);
+        this.appWin.apiRequest("notify", {
+            action: "test",
+            channel: channel,
+            settings: Ext.encode(this._collect())
+        }, function (success, data, errMsg) {
+            if (btn && btn.setDisabled) btn.setDisabled(false);
+            if (success) {
+                SYNO.SDS.iCloudPhotoSync._showMsg(T("notify:tab"), T("notify:msg_test_ok"), "info");
+            } else {
+                SYNO.SDS.iCloudPhotoSync._showMsg(T("overview:status_error"),
+                    T("notify:msg_test_failed", [Ext.util.Format.htmlEncode(errMsg || "")]), "error");
+            }
+        }, true, 60000);
+    }
+});
+
 Ext.define("SYNO.SDS.iCloudPhotoSync.LogViewer", {
     extend: "Ext.Panel",
 
@@ -3247,8 +3446,21 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.LogViewer", {
                 header: SYNO.SDS.iCloudPhotoSync._T("log:col_message"),
                 dataIndex: "message",
                 id: "log-message",
-                renderer: function (val) {
-                    return Ext.util.Format.htmlEncode(val);
+                renderer: function (val, meta) {
+                    // Tracebacks arrive as one multi-line entry: show the
+                    // header and the exception line, full text on hover.
+                    var lines = String(val || "").split("\n");
+                    if (lines.length === 1) {
+                        return Ext.util.Format.htmlEncode(val);
+                    }
+                    // qtip content is HTML: encode each line, then encode
+                    // the result once more for the attribute.
+                    var html = [];
+                    Ext.each(lines, function (ln) {
+                        html.push(Ext.util.Format.htmlEncode(ln).replace(/ /g, "&nbsp;"));
+                    });
+                    meta.attr = 'ext:qtip="' + Ext.util.Format.htmlEncode(html.join("<br>")) + '"';
+                    return Ext.util.Format.htmlEncode(lines[0] + " … " + lines[lines.length - 1].trim());
                 }
             }],
             autoExpandColumn: "log-message",

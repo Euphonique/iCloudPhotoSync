@@ -19,20 +19,12 @@ sys.path.insert(0, LIB_DIR)
 if os.path.isdir(VENDOR_DIR):
     sys.path.insert(0, VENDOR_DIR)
 
-import config_manager
+import log_utils
 import move_engine
 
-LOG_DIR = os.path.join(config_manager.PKG_VAR, "logs")
-os.makedirs(LOG_DIR, exist_ok=True)
-LOG_FILE = os.path.join(LOG_DIR, "move.log")
-
-_level_name = config_manager.load_config().get("log_level", "INFO").upper()
-_level = getattr(logging, _level_name, logging.INFO)
 logging.basicConfig(
-    filename=LOG_FILE,
-    level=_level,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[log_utils.file_handler("move.log")],
+    level=log_utils.configured_level(),
 )
 LOGGER = logging.getLogger("move_runner")
 

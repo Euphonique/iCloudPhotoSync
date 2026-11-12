@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 import config_manager
 import icloud_client
+import log_utils
 import sync_engine
 
 logger = logging.getLogger(__name__)
@@ -22,12 +23,8 @@ logger = logging.getLogger(__name__)
 # CGI processes have no logging configured — attach a file handler so
 # album (and pyicloud) log messages are captured for debugging.
 if not logging.root.handlers:
-    _log_dir = os.path.join(config_manager.PKG_VAR, "logs")
-    os.makedirs(_log_dir, exist_ok=True)
-    _fh = logging.FileHandler(os.path.join(_log_dir, "album.log"))
-    _fh.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
-    logging.root.addHandler(_fh)
-    logging.root.setLevel(logging.DEBUG)
+    logging.root.addHandler(log_utils.file_handler("album.log"))
+    logging.root.setLevel(log_utils.configured_level())
 
 ADP_ERROR_CODE = 320
 

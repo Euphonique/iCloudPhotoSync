@@ -29,6 +29,7 @@ from handlers import config as config_handler
 from handlers import log as log_handler
 from handlers import move as move_handler
 from handlers import update as update_handler
+from handlers import notify as notify_handler
 
 HANDLERS = {
     "status": status_handler.handle,
@@ -40,6 +41,7 @@ HANDLERS = {
     "log": log_handler.handle,
     "move": move_handler.handle,
     "update": update_handler.handle,
+    "notify": notify_handler.handle,
 }
 
 
@@ -217,9 +219,13 @@ def _log_sanitizer():
     """
     import re
     import config_manager
+    import log_utils
 
     email_aliases = {}
     account_aliases = {}
+    # pyicloud names cookie/session files after the Apple ID with every
+    # non-word character stripped ("johndoeexamplecom.session").
+    cookie_names = {}
 
     # Preload known account IDs + Apple IDs from config so redaction is
     # consistent even if they don't happen to appear in this particular
@@ -230,6 +236,9 @@ def _log_sanitizer():
             apple_id = (acc.get("apple_id") or "").strip().lower()
             if apple_id:
                 email_aliases[apple_id] = "<apple-id-%d>" % i
+                cookie_name = re.sub(r"\W", "", apple_id)
+                if cookie_name:
+                    cookie_names[cookie_name] = "<apple-id-%d>" % i
             account_id = acc.get("id") or ""
             if account_id:
                 account_aliases[account_id] = "<account-%d>" % i
@@ -238,15 +247,12 @@ def _log_sanitizer():
 
     email_re = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
     uuid_re = re.compile(r"\b[0-9a-fA-F]{8}\b")  # 8-hex account-id prefix style
-    # Catch auth-sensitive key=value chunks on a single line. We look for the
-    # key name and nuke the rest of the token up to whitespace / quote / comma.
-    secret_kv_re = re.compile(
-        r"(?i)(password|passwd|pwd|token|cookie|authorization|x-apple-[\w-]*|"
-        r"session[_-]?id|trust[_-]?token|srp[_-]?[a-z]*|apple[_-]?id[_-]?(?:\w*))"
-        r"\s*[:=]\s*['\"]?([^\s,'\")}]+)",
+    # apple_id=... pairs; tokens, SRP proofs and 2FA codes (JSON and
+    # key=value) are handled by log_utils.redact — logs written before
+    # 1.7.1 still contain them in clear text.
+    apple_id_kv_re = re.compile(
+        r"(?i)(apple[_-]?id[_-]?(?:\w*))\s*[:=]\s*['\"]?([^\s,'\")}]+)",
     )
-    # Authorization-style header values: "Bearer <tok>".
-    bearer_re = re.compile(r"(?i)\bBearer\s+\S+")
 
     def alias_email(match):
         addr = match.group(0).lower()
@@ -267,9 +273,10 @@ def _log_sanitizer():
     def sanitize(text):
         text = email_re.sub(alias_email, text)
         text = uuid_re.sub(alias_uuid, text)
-        text = secret_kv_re.sub(lambda m: "%s=<redacted>" % m.group(1), text)
-        text = bearer_re.sub("Bearer <redacted>", text)
-        return text
+        for name, alias in cookie_names.items():
+            text = re.sub(re.escape(name), alias, text, flags=re.IGNORECASE)
+        text = apple_id_kv_re.sub(lambda m: "%s=<redacted>" % m.group(1), text)
+        return log_utils.redact(text)
 
     return sanitize
 
