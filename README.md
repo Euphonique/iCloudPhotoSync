@@ -1,3 +1,5 @@
+# Thanks for all the issue reports, commits and kind words. ♥️
+
 # Synology iCloud Photo Sync
 A native Synology DSM 7.2 package that automatically mirrors your iCloud photo library to your NAS — so your memories live on storage you own, not just on Apple's servers.
 Runs as a proper DSM app with its own tile, settings UI, scheduler daemon, and DSM notifications. No Docker, no cron hacks, no SSH fiddling.
