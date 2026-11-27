@@ -455,6 +455,20 @@ def _download_file(url, dest_path, session=None):
     return False
 
 
+def _set_mtime(path, created_ms):
+    """Stamp the file with the photo's capture date (CloudKit assetDate, ms)."""
+    if not created_ms:
+        return
+    t = created_ms / 1000.0
+    try:
+        # Skip the write when already correct; runs on every skipped file.
+        if int(os.stat(path).st_mtime) == int(t):
+            return
+        os.utime(path, (t, t))
+    except OSError as e:
+        LOGGER.warning("Could not set timestamp on %s: %s", path, e)
+
+
 def _writable(path):
     """Return True if the current user can create files under `path`.
 
@@ -1303,6 +1317,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
             known = synced_checksums.get(vid.manifest_id)
             ours = bool(known) and known[1] == vpath
             if ours and os.path.exists(vpath) and known[0] == vid.checksum:
+                _set_mtime(vpath, vid.created)  # re-date files synced before the fix
                 return  # already synced
             with synced_lock:
                 # Never clobber a file we don't own (a reservation made by
@@ -1350,6 +1365,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                     perf["exists_calls"] += 1
                     if _exists:
                         LOGGER.debug("Skipped (dedup): %s in %s", photo.filename, album_name)
+                        _set_mtime(existing_path, photo.created)  # re-date files synced before the fix
                         # Don't increment skipped_photos — these are already
                         # counted in the manifest pre-seed at sync start.
                         progress.save_throttled()
@@ -1522,10 +1538,12 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                 return (photo, fname, fpath, False, False, False, False)
             if not ok:
                 return (photo, fname, fpath, False, False, False, False)
+            _set_mtime(fpath, photo.created)
             if formats in ("jpg_only", "both") and heic_converter.is_heic(fname):
                 if heic_converter.can_convert():
                     jpg_path = heic_converter.convert_to_jpg(fpath, quality=jpg_quality)
                     if jpg_path:
+                        _set_mtime(jpg_path, photo.created)
                         if formats == "jpg_only":
                             try:
                                 os.remove(fpath)
