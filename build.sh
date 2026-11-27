@@ -49,7 +49,7 @@ else
 fi
 if [ -n "$PIP_CMD" ]; then
     $PIP_CMD install --target "$STAGE/lib/vendor" \
-        --no-compile --no-deps \
+        --no-compile --no-deps --upgrade \
         -r "$SRC_DIR/requirements-pure.txt" \
         2>&1 | sed 's/^/    /'
     rm -rf "$STAGE"/lib/vendor/*.dist-info
